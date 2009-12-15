@@ -13,7 +13,7 @@ import Schema
 
 main :: IO ()
 main = do 
-    putStrLn "Running HDB dev v1"
+    putStrLn "Running dibs dev v1"
     let port = PortNumber 2420
     connQueue <- newBTCIO 500  -- new BoundedTChan for incoming connections
     schema <- loadSchema

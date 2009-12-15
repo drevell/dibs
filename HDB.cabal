@@ -1,7 +1,7 @@
-name:     HDB
+name:     dibs
 version:  0.1
 
-executable HDB
+executable dibs
   hs-source-dirs:  src
   main-is:         Main.hs
 

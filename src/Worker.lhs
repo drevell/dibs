@@ -20,7 +20,7 @@ are spawned on program startup.
 > worker :: BoundedTChan NewConnection -> Schema -> IO ()
 > worker connQueue schema = forever $ do 
 >     MkNewConnection handle hostname port <- takeBTCIO connQueue -- blocking
->     hPutStrLn handle "HDB ready."
+>     hPutStrLn handle "Dibs ready."
 >     repl schema "" handle `catch` (\_ -> return ())  -- ignore IO exceptions
 >     hClose handle
 >     return ()
