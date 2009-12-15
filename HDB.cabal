@@ -1,0 +1,7 @@
+name:     HDB
+version:  0.1
+
+executable HDB
+  hs-source-dirs:  src
+  main-is:         Main.hs
+
