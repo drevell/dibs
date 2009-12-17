@@ -6,5 +6,11 @@
 
 Turns an input string into a parsed abstract syntax tree.
 
-> parse :: Dibs a => String -> Dibs
-> parse s = DibsCreate "mytable" [("mycol", Int64ColType)]
+> parse :: String -> (DibsAST, String)
+> parse s = 
+>
+> exampleCreate :: String -> (DibsAST, String)
+> exampleCreate = (DibsCreate "mytable" [("mycol", Int64ColType)], "")
+>
+> exampleGet :: String -> (DibsAST, String)
+> exampleGet = (DibsGet "mytable" ["mycol"] LiteralTrue, "")

@@ -11,31 +11,41 @@
 > import Data.List
 > import Parser
 > import Schema
-
-> data NewConnection = MkNewConnection Handle HostName PortNumber
+> import AST
+> import Logger
+> import Config
 
 This is the function passed to forkIO to be a new thread. Several of these
 are spawned on program startup.
 
-> worker :: BoundedTChan NewConnection -> Schema -> IO ()
-> worker connQueue schema = forever $ do 
+> worker :: ConfigData -> IO ()
+> worker config = forever $ do 
+>     let connQueue = getBTChan config
 >     MkNewConnection handle hostname port <- takeBTCIO connQueue -- blocking
->     hPutStrLn handle "Dibs ready."
->     repl schema "" handle `catch` (\_ -> return ())  -- ignore IO exceptions
+>     (getLogFun config) config (getLogLvl config) "Dibs ready."
+>     hSetBuffering handle LineBuffering  -- switch from block to line buffering
+>     repl config handle "" `catch` (\_ -> return ())  -- ignore IO exceptions
 >     hClose handle
 >     return ()
 
 This is the Read-Eval-Print Loop (REPL) run by worker threads.
 
-> repl :: Schema -> String -> Handle -> IO ()
-> repl schema stringSoFar handle =
->       if "\n\n" `isInfixOf` stringSoFar
+> repl :: ConfigData -> Handle -> String -> IO ()
+> repl config handle stringSoFar =
+>       if "\n\n" `isInfixOf` stringSoFar  -- transactions separated by \n\n
 >         then do
->           (parsedStmt, remaining) <- parse stringSoFar
->           result <- run schema parsedStmt
->           hPutStrLn handle $ show result
->           repl remaining handle
->         else
->           repl (stringSoFar ++ hGetLine handle) handle
-
+>           hPutStrLn handle "Parsing transaction..."
+>           let (parsedStmt, remaining) = parse stringSoFar
+>           hPutStrLn handle "Running transaction..."
+>           result <- atomically $ run schema parsedStmt
+>           hPutStrLn handle $ "Result: " ++ (show result)
+>           repl config handle remaining
+>         else do 
+>           --log Dbg "No double-newline so far, looping"
+>           --log Dbg ("Buffer is: " ++ stringSoFar) 
+>           anotherLine <- hGetLine handle
+>           repl config handle (stringSoFar ++ anotherLine ++ "\n")
+>      where
+>       schema = getSchema config
+>       log = getLogFun config config
 

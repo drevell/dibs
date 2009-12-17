@@ -1,7 +1,13 @@
-name:     dibs
-version:  0.1
+name:          dibs
+cabal-version: >= 1.2
+version:       0.1
+License:       GPL
+License-File:  LICENSE
+Author:        David Revell
+Synopsis:      A very simple distributed in-memory database
 
 executable dibs
   hs-source-dirs:  src
   main-is:         Main.hs
-
+  other-modules:   Logger BoundedTChan Util Worker Parser AST Schema Logger Config
+  build-depends:   base, haskell98, containers, stm, network

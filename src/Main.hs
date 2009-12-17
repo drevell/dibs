@@ -6,10 +6,13 @@ module Main where
 import Network
 import IO
 import Worker
-import BoundedTChan
+import BoundedTChan 
 import Control.Concurrent
 import Util
 import Schema
+import Logger
+import Config
+
 
 main :: IO ()
 main = do 
@@ -17,27 +20,37 @@ main = do
     let port = PortNumber 2420
     connQueue <- newBTCIO 500  -- new BoundedTChan for incoming connections
     schema <- loadSchema
-    spawnWorkers schema connQueue 10
+    logBTChan <- spawnLogger
+    let logFun = logmsg logBTChan
+    let config = ConfigData schema connQueue logFun Dbg
+    spawnWorkers config 10
     withSocketsDo $ do 
         listenSocket <- listenOn port
-        acceptLoop listenSocket connQueue
+        acceptLoop config listenSocket
         return ()
 
 
-acceptLoop :: Socket -> BoundedTChan NewConnection -> IO ()
-acceptLoop listenSocket connQueue =
+acceptLoop :: ConfigData -> Socket -> IO ()
+acceptLoop config listenSocket =
     forever $ do 
         (handle, hostname, port) <- accept listenSocket
         putBTCIO connQueue (MkNewConnection handle hostname port)
         return ()
+   where
+    connQueue = getBTChan config
 
-spawnWorkers :: BoundedTChan NewConnection -> Int -> IO ()
-spawnWorkers connQueue numWorkers = do 
+spawnWorkers :: ConfigData -> Int -> IO ()
+spawnWorkers config numWorkers = do 
     case numWorkers of 
         0 -> return ()
         _ -> do 
-               forkIO $ worker connQueue
-               spawnWorkers connQueue (numWorkers-1)
+               forkIO $ worker config
+               spawnWorkers config (numWorkers-1)
                return ()
              
-
+spawnLogger :: IO (BoundedTChan (LogLevel, String))
+spawnLogger = do
+        btchan <- newBTCIO 500
+        forkIO (logger btchan)
+        return btchan
+        
