@@ -12,7 +12,7 @@ the datatypes for table and column storage.
 > type ID = Int64
 
 > data Schema = Schema (TVar (Map String Table)) 
-> data Table = Table (TVar (Map String Column))
+> data Table = Table { tNextID :: TVar ID, tValMap :: TVar (Map String Column) }
 > data ColType = StringColType | Int64ColType | BoolColType | CharColType
 >       deriving Eq
 
@@ -21,29 +21,39 @@ A type class for Haskell types that can be used as Dibs values. There is a wrap
 function for each type that wraps the value in an DibsPrim type.
 
 > class BoxableHSPrim a where
->       wrap :: a ->  DibsValue
+>       wrap :: a ->  SingleValue
 > instance BoxableHSPrim Int64 where
 >       wrap x = DibsInt64 x
 > instance BoxableHSPrim Char where
 >       wrap x = DibsChar x
-> instance DibsPrim String where
->       wrap x = DibsString x
+>-- instance BoxableHSPrim String where
+>--       wrap x = DibsString x
 > instance BoxableHSPrim Bool where
 >       wrap x = DibsBool x
 
+A SingleValue is a primitive type of the dibs system, and represents a single
+cell of a table or MultiValue.
+
+> data SingleValue = DibsInt64 Int64 | DibsChar Char | DibsString String 
+>                  | DibsBool Bool 
+>       deriving (Show, Eq)
+
 A multivalue represents a column of data, either in an actual table, or part
 of an intermediate result in memory.
-> data (BoxableHSPrim a) => MultiValue a = String String (Map ID a)
+
+> data MultiValue = MultiValue { tableName :: !String, 
+>                                colName :: !String,
+>                                mValMap :: !(Map ID SingleValue) }
 >-- data MultiValue = MultiString String String (Map ID String) 
 >--                 | MultiInt64 String String (Map ID Int64)
 >--                 | MultiBool String String (Map ID Bool) 
 >--                 | MultiChar String String (Map ID Char)
->--       deriving Show
+>       deriving Show
 
 A column is a TVar containing a multivalue, which is shared between threads.
 
->-- data Column = Column (TVar MultiValue) 
-> data Column a = Column TVar (MultiValue a)
+> data Column = Column { colMultiVal :: TVar MultiValue} 
+
 Returns the Table corresponding to a given name, throwing an exception if it
 doesn't exist.
 
@@ -65,7 +75,8 @@ Create a new table. Raises an exception if it already exists.
 >         Just _ -> error ("Table exists: " ++ tableName)
 >         Nothing -> do 
 >                      newTableTv <- newTVar Map.empty
->                      let newTable = Table newTableTv
+>                      firstID <- newTVar 0
+>                      let newTable = Table firstID newTableTv
 >                      let newSchema = Map.insert tableName newTable tableMap
 >                      writeTVar schemaTv newSchema
 >                      -- Now the table exists, add columns 1 by 1
@@ -78,18 +89,15 @@ if the column name already exists.
 > addColumn :: Schema -> String -> (String, ColType) -> STM ()
 > addColumn schema tableName (name, coltype) = do
 >       t <- getTableByName schema tableName
->       let Table tableTv = t
+>       let Table _ tableTv = t
 >       tableMap <- readTVar tableTv
 >       case Map.lookup name tableMap of
 >         Just _ -> error ("Column "++name++" already exists!")
 >         Nothing -> do
->           newColumn <- newColumnForType coltype
->           let newTableMap = Map.insert tableName newColumn tableMap
+>           columnTv <- newTVar (MultiValue tableName name Map.empty)
+>           let newColumn = Column columnTv
+>           let newTableMap = Map.insert name newColumn tableMap
 >           writeTVar tableTv newTableMap
->      where
->       newColumnForType :: ColType -> STM Column
->       newColumnForType StringColType = 
->              return newTVar (Multivalue tableName name Map.empty)
 
                tv <- newTVar (MultiString tableName name Map.empty)
                return $ Column tv
@@ -113,7 +121,7 @@ Load or create the schema at startup.
 Given a list of column names in a certain table, return the columns.
 
 > getColumnsByName :: Table -> [String] -> STM [Column]
-> getColumnsByName (Table tableTv) names = do
+> getColumnsByName (Table _ tableTv) names = do
 >       tableMap <- readTVar tableTv
 >       return $ map (lookupSingle tableMap) names -- TODO: parallelize?
 >      where
@@ -126,6 +134,6 @@ Given a list of column names in a certain table, return the columns.
 Unpack a column or list of columns to get its underlying MultiValue
 
 > columnToMulti :: Column -> STM MultiValue
-> columnToMulti (Column tv) = return $ readTVar tv
+> columnToMulti (Column tv) = readTVar tv
 > columnsToMultis :: [Column] -> STM [MultiValue]
 > columnsToMultis columns = mapM columnToMulti columns
