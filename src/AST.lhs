@@ -11,16 +11,39 @@ that I don't yet understand.
 > import qualified Data.Map as Map
 > import Schema
 > import List
+> import Monad
 
 >-- class DibsAST a where
 >--     run :: Schema -> a -> STM DibsValue
+ 
 
-> data DibsAST = DibsCreate String [(String, ColType)]
->              | DibsGet String [String]
->              | DibsInsert String [String] [[SingleValue]]
->--              | Equals DibsValue DibsValue
->--              | LiteralTrue
->
+> data DibsAST = 
+>       -- create table: name, list of pairs (name,type)
+>       DibsCreate DibsAST DibsAST
+>       -- get table contents: name, list of columns 
+>       | DibsGet DibsAST DibsAST
+>       -- insert into table: name, list of columns, list of lists of values 
+>       | DibsInsert DibsAST DibsAST DibsAST 
+>       -- execute in order left, right
+>       | DibsSeq DibsAST DibsAST
+>       -- 
+>       | DibsIdentifier String
+>       | DibsMultiply DibsAST DibsAST
+>       | DibsDivide DibsAST DibsAST
+>       | DibsAdd DibsAST DibsAST
+>       | DibsSubtract DibsAST DibsAST
+>       | DibsLiteral SingleValue
+>       | DibsList [DibsAST]
+>       | DibsTuple [DibsAST]
+>--      | Equals DibsValue DibsValue
+>--       | LiteralTrue
+>       deriving (Show)
+
+> data EvalResult = SingleEvalResult SingleValue
+>                 | MVEvalResult [MultiValue]
+>                 | ListEvalResult [EvalResult]
+>       deriving (Show)
+
 >-- class Conditional c where
 >--     eval :: c -> MultiValue -> Bool
 >--     resolveColumns :: c -> [(String, Int)] -> c
@@ -31,36 +54,100 @@ that I don't yet understand.
 >--     eval c v = False
 >--     resolveColumns x = x
 
-Implementations of the behavior for each Dibs operator.
+Takes a list of multivalues containing one multivalue. That multivalue should
+contain only one element. That element is returned. This is useful for AST
+nodes whose result is a single value, e.g. DibsLiteral or DibsIdentifier.
 
-> run :: Schema -> DibsAST -> STM [MultiValue]
-> run schema (DibsCreate tableName columns) = do
->           createTable schema tableName columns -- could throw exception
->           return $ [boxAsMulti (wrap True)]
-> run schema (DibsGet tableName colNames) = do
->           table <- getTableByName schema tableName
->           columns <- getColumnsByName table colNames
->           multis <- columnsToMultis columns
->           return multis
->           --newMultis <- condFilter cond
->--           return newMultis
-> run schema (DibsInsert tableName names rows) = do
+> unpackSingleton :: [MultiValue] -> SingleValue
+> unpackSingleton (mv:[]) = snd . head . Map.toList . mValMap $ mv
+> unpackSingleton x = error ("Expected singleton but got: " ++ show x)
+> unpackSingletonM :: STM [MultiValue] -> STM SingleValue
+> unpackSingletonM mv = unpackSingleton `liftM` mv
+>-- unpackSingletonM x = do { v <- x ; return unpackSingleton v}
+
+Takes a list of multivalues, where each multivalue should contain only a single
+value, and returns a list containing each of those values. This is useful
+because the result of evaluating a DibsList will give a list of singletons that
+is suitable for passing to this function.
+
+> unpackList :: [MultiValue] -> [SingleValue]
+> unpackList (m:ms) = (unpackSingleton [m]) : (unpackList ms)
+> unpackList [] = []
+> unpackListM :: STM [MultiValue] -> STM [SingleValue]
+> unpackListM mvs = unpackList `liftM` mvs
+
+Turn a SingleValue into a string. It must actually be a DibsString or there will
+be an error.
+
+> svToString :: SingleValue -> String
+> svToString (DibsString s) = s
+> svToString _ = error ("Tried to convert non-string SingleValue to string!")
+
+> erToString :: EvalResult -> String
+> erToString (SingleEvalResult (DibsString s)) = s
+> erToString x = error ("Invalid argument to erToString: " ++ show x)
+
+> erToSingleVal :: EvalResult -> SingleValue
+> erToSingleVal (SingleEvalResult v) = v
+> erToSingleVal x = error ("Cannot reduce to single value: " ++ show x)
+
+> erToListSV :: EvalResult -> [SingleValue]
+> erToListSV (ListEvalResult l) = map erToSingleVal l
+> erToListSV x = error ("Not a list eval result: " ++ show x)
+
+> runForString :: Schema -> DibsAST -> STM String
+> runForString schema a = do
+>       v <- run schema a
+>       let SingleEvalResult sv = v
+>       let DibsString s = sv
+>       return s
+
+> runForList :: Schema -> DibsAST -> STM [EvalResult]
+> runForList schema a = do
+>       vs <- run schema a
+>       let ListEvalResult l = vs
+>       return l
+
+Implementations of the behavior for each AST node.
+
+> run :: Schema -> DibsAST -> STM EvalResult
+> run schema (DibsSeq l r) = do
+>       run schema l -- discard result of first expr (use side effects)
+>       run schema r -- return result of second expr
+> run schema (DibsCreate tableNameAST columnNamesAST) = do
+>       tableName <- runForString schema tableNameAST
+>       erColumnList <- runForList schema columnNamesAST
+>       let columnList = map erToString erColumnList
+>       success <- createTable schema tableName columnList :: STM Bool
+>       return $ SingleEvalResult . DibsBool $ success
+> run schema (DibsGet tableNameAST columnsAST) = do
+>       tableName <- runForString schema tableNameAST
+>       colNameListER <- runForList schema columnsAST
+>       let colNameList = map erToString colNameListER
 >       table <- getTableByName schema tableName
->       columns <- getColumnsByName table names
+>       columns <- getColumnsByName table colNameList
+>       multis <- columnsToMultis columns
+>       return $ MVEvalResult multis
+> run schema (DibsInsert tableNameAST namesAST rowsAST) = do
+>       tableName <- runForString schema tableNameAST
+>       nameListER <- runForList schema namesAST
+>       let nameList = map erToString nameListER
+>       nestedRowsER <- run schema rowsAST
+>       let rows = erNest2ListToSv nestedRowsER 
+>               -- ^ convert nested ListEvalResult to [[SingleValue]]
+>       table <- getTableByName schema tableName
+>       columns <- getColumnsByName table nameList
 >       oldMultis <- columnsToMultis columns
 >       nextID <- readTVar $ tNextID table
 >       let insertMultis = rowsToMulti rows (nextID)
->--       let colToNameMap = buildColNameMap names
->--       let nameToColMap = buildNameColMap oldMultis
->--       let permutation = [mapLook nameToColMap . mapLook colToNameMap $ y 
->--                      | y <- [0..(length names)]]
->--       let orderedInsertMultis = permute permutation insertMultis
->--       let finalMultis = mvListUnion oldMultis orderedInsertMultis
 >       let finalMultis = mvListUnion oldMultis insertMultis
->       -- write each multivalue back to its column tvar
 >       mapM (\(c,mv) -> writeTVar (colMultiVal c) mv) $ zip columns finalMultis
 >       writeTVar (tNextID table) $ nextID + (fromIntegral (length rows))
->       return insertMultis -- return stored values for use in expression
+>       return $ MVEvalResult insertMultis -- return stored values for use in expression
+>      where
+>       erNest2ListToSv :: EvalResult -> [[SingleValue]]
+>       erNest2ListToSv (ListEvalResult ers) = map erToListSV ers
+>       erNest2ListToSv x = error ("Not a ListEvalResult: " ++ show x)
 >--      where
 >--       mapLook :: (Ord k) => Map k a -> k -> a  -- wrapper to deal with Monad
 >--       mapLook m k = case Map.lookup k m of
@@ -69,6 +156,11 @@ Implementations of the behavior for each Dibs operator.
 >--       permute permutation l =  [l !! x | x <- permutation]
 >--       namesToMultis (name:names) multis = 
 >--         let tree = Map.nameToMulti name ++ namesToMultis names
+> run schema (DibsIdentifier s) = return $ SingleEvalResult . DibsString $ s
+> run schema (DibsList l) = liftM ListEvalResult $ mapM (run schema) l
+> run schema (DibsTuple l) = liftM ListEvalResult $ mapM (run schema) l
+> run schema (DibsLiteral sv) = return $ SingleEvalResult sv
+> run schema x  = error ("Unimplemented \"run\" for: " ++ show x)
 
 Compute unions of MultiValues and lists of MultiValues
 
@@ -78,9 +170,9 @@ Compute unions of MultiValues and lists of MultiValues
 >       in MultiValue tableName colName $ Map.union (mValMap mv1) (mValMap mv2)
 > mvListUnion :: [MultiValue] -> [MultiValue] -> [MultiValue]
 > mvListUnion [] [] = []
+> mvListUnion (h1:t1) (h2:t2) = mvUnion h1 h2 : mvListUnion t1 t2
 > mvListUnion [] _  = error "First list was longer, in mvListUnion"
 > mvListUnion _ []  = error "Second list was longer, in mvListUnion" 
-> mvListUnion (h1:t1) (h2:t2) = mvUnion h1 h2 : mvListUnion t1 t2
 
 > -- convert from a row-major list of rows to a column-major list of multivalues
 > rowsToMulti :: [[SingleValue]] -> ID -> [MultiValue]

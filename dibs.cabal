@@ -10,4 +10,4 @@ executable dibs
   hs-source-dirs:  src
   main-is:         Main.hs
   other-modules:   Logger BoundedTChan Util Worker Parser AST Schema Logger Config
-  build-depends:   base, haskell98, containers, stm, network
+  build-depends:   base, haskell98, containers, stm, network, parsec

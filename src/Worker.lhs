@@ -53,22 +53,19 @@ This is the Read-Eval-Print Loop (REPL) run by worker threads.
 >       || ("\r\n\r\n" `isInfixOf` stringSoFar) 
 >         then do
 >           hPutStrLn handle "Parsing transaction..."
->           case parse stringSoFar of
+>           case dqlParse stringSoFar of
 >             Left err  -> do
 >               hPutStrLn handle ("Parse error: " ++ err)
 >               log Info ("Client input parse error")
 >               repl config handle ""
->             Right (parsed, remaining) -> do
+>             Right parsed -> do
 >               hPutStrLn handle "Running transaction..."
 >               result <- atomically $ run schema parsed
 >               hPutStrLn handle $ "Result: " ++ (show result)
->               repl config handle remaining
+>               repl config handle ""
 >         else do 
->           log Dbg "No double-newline so far, looping"
 >           let asInts = map ord stringSoFar :: [Int]
->           log Dbg ("Buffer is: " ++ show(asInts)) 
 >           nextLine <- hGetLine handle
->           log Dbg "Done reading next line"
 >           repl config handle $! (stringSoFar ++ nextLine ++ "\n")
 >      where
 >       schema = getSchema config

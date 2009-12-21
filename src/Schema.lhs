@@ -14,22 +14,22 @@ the datatypes for table and column storage.
 > data Schema = Schema (TVar (Map String Table)) 
 > data Table = Table { tNextID :: TVar ID, tValMap :: TVar (Map String Column) }
 > data ColType = StringColType | Int64ColType | BoolColType | CharColType
->       deriving Eq
+>       deriving (Eq, Show)
 
 
 A type class for Haskell types that can be used as Dibs values. There is a wrap
 function for each type that wraps the value in an DibsPrim type.
 
-> class BoxableHSPrim a where
->       wrap :: a ->  SingleValue
-> instance BoxableHSPrim Int64 where
->       wrap x = DibsInt64 x
-> instance BoxableHSPrim Char where
->       wrap x = DibsChar x
+>-- class BoxableHSPrim a where
+>--       wrap :: a ->  SingleValue
+>-- instance BoxableHSPrim Int64 where
+>--       wrap x = DibsInt64 x
+>-- instance BoxableHSPrim Char where
+>--       wrap x = DibsChar x
 >-- instance BoxableHSPrim String where
 >--       wrap x = DibsString x
-> instance BoxableHSPrim Bool where
->       wrap x = DibsBool x
+>-- instance BoxableHSPrim Bool where
+>--       wrap x = DibsBool x
 
 A SingleValue is a primitive type of the dibs system, and represents a single
 cell of a table or MultiValue.
@@ -43,7 +43,7 @@ of an intermediate result in memory.
 
 > data MultiValue = MultiValue { tableName :: !String, 
 >                                colName :: !String,
->                                mValMap :: !(Map ID SingleValue) }
+>                                mValMap :: (Map ID SingleValue) }
 >-- data MultiValue = MultiString String String (Map ID String) 
 >--                 | MultiInt64 String String (Map ID Int64)
 >--                 | MultiBool String String (Map ID Bool) 
@@ -52,7 +52,7 @@ of an intermediate result in memory.
 
 A column is a TVar containing a multivalue, which is shared between threads.
 
-> data Column = Column { colMultiVal :: TVar MultiValue} 
+> data Column = Column { colMultiVal :: !(TVar MultiValue)} 
 
 Returns the Table corresponding to a given name, throwing an exception if it
 doesn't exist.
@@ -67,12 +67,12 @@ doesn't exist.
 
 Create a new table. Raises an exception if it already exists.
 
-> createTable :: Schema -> String -> [(String, ColType)] -> STM ()
+> createTable :: Schema -> String -> [String] -> STM Bool
 > createTable schema tableName columns = do
 >       let Schema schemaTv = schema
 >       tableMap <- readTVar schemaTv
 >       case Map.lookup tableName tableMap of
->         Just _ -> error ("Table exists: " ++ tableName)
+>         Just _ -> return False
 >         Nothing -> do 
 >                      newTableTv <- newTVar Map.empty
 >                      firstID <- newTVar 0
@@ -81,13 +81,13 @@ Create a new table. Raises an exception if it already exists.
 >                      writeTVar schemaTv newSchema
 >                      -- Now the table exists, add columns 1 by 1
 >                      mapM (addColumn schema tableName) columns
->                      return ()
+>                      return True
 
 Adds a column to a table, throwing an exception if the table doesn't exist or
 if the column name already exists.
 
-> addColumn :: Schema -> String -> (String, ColType) -> STM ()
-> addColumn schema tableName (name, coltype) = do
+> addColumn :: Schema -> String -> String -> STM ()
+> addColumn schema tableName name = do
 >       t <- getTableByName schema tableName
 >       let Table _ tableTv = t
 >       tableMap <- readTVar tableTv
