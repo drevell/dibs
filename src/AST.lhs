@@ -12,6 +12,7 @@ that I don't yet understand.
 > import Schema
 > import List
 > import Monad
+> import Control.Monad.State
 
 >-- class DibsAST a where
 >--     run :: Schema -> a -> STM DibsValue
@@ -37,20 +38,12 @@ that I don't yet understand.
 >       | DibsTuple [DibsAST]
 >       deriving (Show)
 
-> data Scope = Scope (Map String SingleValue)
+> data Scope = Scope (Map String EvalResult)
 >            | NullScope
 
-> data Txn a = Txn Scope a 
-
-> addToScope :: Scope -> String -> SingleValue -> Txn () 
-> addToScope (Scope oldMap) name value = 
->       Txn (Txn Map.insert name value oldMap) ()
-
-> instance Monad Txn where
->       (>>=) :: Txn a -> (a -> Txn b) -> Txn b
->       t >>= f =
->           let Txn oldScope oldV = x in
->           return $ f x
+>-- addToScope :: Scope -> String -> SingleValue -> Txn () 
+>-- addToScope (Scope oldMap) name value = 
+>--       Txn (Txn Map.insert name value oldMap) ()
 
 > data EvalResult = SingleEvalResult SingleValue
 >                 | MVEvalResult [MultiValue]
@@ -67,6 +60,22 @@ that I don't yet understand.
 >--     eval c v = False
 >--     resolveColumns x = x
 
+> type Txn a = State Scope a
+
+> getVar :: String -> Txn EvalResult
+> getVar name = do
+>       scope@(Scope varMap) <- get -- use underlying state monad
+>       case Map.lookup name varMap of
+>           Just x -> return x
+>           Nothing -> error ("Reference to nonexistent variable: " ++ name)    
+> putVar :: String -> EvalResult -> Txn ()
+> putVar name value = do
+>       scope@(Scope varMap) <- get --use underlying State monad
+>       case Map.lookup name varMap of
+>           Just x -> error ("Double-assignment to variable: " ++ name)
+>           Nothing -> do
+>               put $ Scope (Map.insert name value varMap) --put to State monad
+>               return ()
 
 Takes a list of multivalues containing one multivalue. That multivalue should
 contain only one element. That element is returned. This is useful for AST
@@ -109,14 +118,14 @@ be an error.
 > erToListSV (ListEvalResult l) = map erToSingleVal l
 > erToListSV x = error ("Not a list eval result: " ++ show x)
 
-> runForString :: Schema -> DibsAST -> STM (TxnState, String)
+> runForString :: Schema -> DibsAST -> STM String
 > runForString schema a = do
 >       v <- run schema a
 >       let SingleEvalResult sv = v
 >       let DibsString s = sv
 >       return s
 
-> runForList :: Schema -> DibsAST -> STM (TxnState, [EvalResult])
+> runForList :: Schema -> DibsAST -> STM [EvalResult]
 > runForList schema a = do
 >       vs <- run schema a
 >       let ListEvalResult l = vs
@@ -124,12 +133,12 @@ be an error.
 
 Implementations of the behavior for each AST node.
 
-> run :: Schema -> DibsAST -> TxnState -> STM (TxnState, EvalResult)
-> run schema (DibsSeq l r) txnState = do
->       (newTxnState, _) <- run schema l txnState -- discard result of first expr (use side effects)
->       run schema r newTxnState -- return result of second expr
+> run :: Schema -> DibsAST -> STM EvalResult
+> run schema (DibsSeq l r) = do
+>       run schema l -- discard result of first expr (use side effects)
+>       run schema r  -- return result of second expr
 > run schema (DibsCreate tableNameAST columnNamesAST) = do
->       (state1, tableName) <- runForString schema tableNameAST
+>       tableName <- runForString schema tableNameAST
 >       erColumnList <- runForList schema columnNamesAST
 >       let columnList = map erToString erColumnList
 >       success <- createTable schema tableName columnList :: STM Bool
