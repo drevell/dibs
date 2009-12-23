@@ -60,7 +60,7 @@ This is the Read-Eval-Print Loop (REPL) run by worker threads.
 >               repl config handle ""
 >             Right parsed -> do
 >               hPutStrLn handle "Running transaction..."
->               result <- atomically $ run schema parsed
+>               result <- atomically $ run schema parsed NullScope
 >               hPutStrLn handle $ "Result: " ++ (show result)
 >               repl config handle ""
 >         else do 

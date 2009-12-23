@@ -35,9 +35,22 @@ that I don't yet understand.
 >       | DibsLiteral SingleValue
 >       | DibsList [DibsAST]
 >       | DibsTuple [DibsAST]
->--      | Equals DibsValue DibsValue
->--       | LiteralTrue
 >       deriving (Show)
+
+> data Scope = Scope (Map String SingleValue)
+>            | NullScope
+
+> data Txn a = Txn Scope a 
+
+> addToScope :: Scope -> String -> SingleValue -> Txn () 
+> addToScope (Scope oldMap) name value = 
+>       Txn (Txn Map.insert name value oldMap) ()
+
+> instance Monad Txn where
+>       (>>=) :: Txn a -> (a -> Txn b) -> Txn b
+>       t >>= f =
+>           let Txn oldScope oldV = x in
+>           return $ f x
 
 > data EvalResult = SingleEvalResult SingleValue
 >                 | MVEvalResult [MultiValue]
@@ -53,6 +66,7 @@ that I don't yet understand.
 >-- instance Conditional LiteralFalse where
 >--     eval c v = False
 >--     resolveColumns x = x
+
 
 Takes a list of multivalues containing one multivalue. That multivalue should
 contain only one element. That element is returned. This is useful for AST
@@ -95,14 +109,14 @@ be an error.
 > erToListSV (ListEvalResult l) = map erToSingleVal l
 > erToListSV x = error ("Not a list eval result: " ++ show x)
 
-> runForString :: Schema -> DibsAST -> STM String
+> runForString :: Schema -> DibsAST -> STM (TxnState, String)
 > runForString schema a = do
 >       v <- run schema a
 >       let SingleEvalResult sv = v
 >       let DibsString s = sv
 >       return s
 
-> runForList :: Schema -> DibsAST -> STM [EvalResult]
+> runForList :: Schema -> DibsAST -> STM (TxnState, [EvalResult])
 > runForList schema a = do
 >       vs <- run schema a
 >       let ListEvalResult l = vs
@@ -110,12 +124,12 @@ be an error.
 
 Implementations of the behavior for each AST node.
 
-> run :: Schema -> DibsAST -> STM EvalResult
-> run schema (DibsSeq l r) = do
->       run schema l -- discard result of first expr (use side effects)
->       run schema r -- return result of second expr
+> run :: Schema -> DibsAST -> TxnState -> STM (TxnState, EvalResult)
+> run schema (DibsSeq l r) txnState = do
+>       (newTxnState, _) <- run schema l txnState -- discard result of first expr (use side effects)
+>       run schema r newTxnState -- return result of second expr
 > run schema (DibsCreate tableNameAST columnNamesAST) = do
->       tableName <- runForString schema tableNameAST
+>       (state1, tableName) <- runForString schema tableNameAST
 >       erColumnList <- runForList schema columnNamesAST
 >       let columnList = map erToString erColumnList
 >       success <- createTable schema tableName columnList :: STM Bool
