@@ -13,6 +13,7 @@ that I don't yet understand.
 > import List
 > import Monad
 > import Control.Monad.State
+> import Config
 
 >-- class DibsAST a where
 >--     run :: Schema -> a -> STM DibsValue
@@ -60,7 +61,9 @@ that I don't yet understand.
 >--     eval c v = False
 >--     resolveColumns x = x
 
-> type Txn a = State Scope a
+
+
+> type Txn = StateT Scope (ReaderT ConfigData (WriterT LogEntry))
 
 > getVar :: String -> Txn EvalResult
 > getVar name = do
