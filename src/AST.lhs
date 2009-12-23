@@ -42,26 +42,15 @@ that I don't yet understand.
 > data Scope = Scope (Map String EvalResult)
 >            | NullScope
 
->-- addToScope :: Scope -> String -> SingleValue -> Txn () 
->-- addToScope (Scope oldMap) name value = 
->--       Txn (Txn Map.insert name value oldMap) ()
-
 > data EvalResult = SingleEvalResult SingleValue
 >                 | MVEvalResult [MultiValue]
 >                 | ListEvalResult [EvalResult]
 >       deriving (Show)
 
->-- class Conditional c where
->--     eval :: c -> MultiValue -> Bool
->--     resolveColumns :: c -> [(String, Int)] -> c
->-- instance Conditional LiteralTrue where
->--     eval c v = True
->--     resolveColumns x = x
->-- instance Conditional LiteralFalse where
->--     eval c v = False
->--     resolveColumns x = x
-
-
+The Txn type is a monad that us used to keep track of scoped variables during 
+the execution of a transaction. The AST node implementations will access the
+variables by name, using the getVar and putVar functions, which use the
+underlying Data.Map for storage.
 
 > type Txn = StateT Scope (ReaderT ConfigData (WriterT LogEntry))
 
