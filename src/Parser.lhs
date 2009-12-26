@@ -20,7 +20,7 @@ TODO: left-factor the DQL grammar for performance (probably will reduce clarity)
 > import Text.ParserCombinators.Parsec.Language
 > import Util
 > import Monad
-> import System.IO.Unsafe
+> import ValueTypes
 
 Turns an input string into a parsed abstract syntax tree. Since the Parsec
 parser will give a list of DibsAST nodes, we join them into a tree by folding

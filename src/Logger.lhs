@@ -1,31 +1,40 @@
 The reason that logging takes place in a
 specific thread is because we don't want to slow down the worker threads with
 IO. Ideally they will just quickly copy their message into the buffer of
-messages to be logged and resume their work.
+messages to be logged and go back to work.
 
 > module Logger where
-> import Config
 > import Util
 > import BoundedTChan
+> import ValueTypes
 > import Control.Concurrent.STM
+> import ValueTypes
+> import System.IO.Unsafe
 
-The logmsg function is called by various other threads to log a message.
+The logmsg function is called by other threads to log a message.
 
-> logmsg :: BoundedTChan (LogLevel, String) -> ConfigData -> LogLevel -> String -> IO ()
-> logmsg btchan config msgLevel msg = do
->       let minLevel = getLogLvl config
+> logmsg :: ConfigData -> LogLevel -> String -> IO ()
+> logmsg config msgLevel msg = do
+>       let minLevel = getConfLogLvl config
+>       let btchan = getLogBTChan config
 >       if msgLevel >= minLevel
 >         then do
->           atomically $ putBTC btchan (msgLevel, msg) -- could fail with false
+>           atomically $ putBTC btchan msg -- could fail with false
 >           return ()
 >         else
 >           return ()  -- insufficient log level to log this message
 
 This is the main logger thread. 
 
-> logger :: BoundedTChan (LogLevel, String) -> IO ()
+> logger :: BoundedTChan String -> IO ()
 > logger btchan = forever $ do
->       (level, msg) <- takeBTCIO btchan  -- TODO: read in batches
->       putStrLn $ (show level) ++ ": " ++ msg
->       return ()
+>       msg <- takeBTCIO btchan  -- TODO: read in batches
+>       putStrLn $ msg -- TODO: write to file
 
+This is a wrapper that unpacks a LogEntry and invokes the logmsg function.
+
+> logFromEntry :: ConfigData -> LogEntry -> IO ()
+> logFromEntry config (LogEntry level msg) = logmsg config level msg
+
+> unsafeLog :: String -> ()
+> unsafeLog = unsafePerformIO . putStrLn

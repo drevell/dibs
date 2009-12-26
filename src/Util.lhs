@@ -1,12 +1,11 @@
 
 > module Util where
-> import Data.Foldable
 
  
 A simple infinite loop
   
 > forever :: IO a -> IO ()
-> forever f = do { f ; forever f }
+> forever f = f >> forever f
 
 Apply a function to a list of arguments. Runtime error if list has wrong length.
 
@@ -22,4 +21,3 @@ Apply a function to a list of arguments. Runtime error if list has wrong length.
 > applyList5 f (v:w:x:y:z:[]) = f v w x y z
 > applyList6 :: (a -> a -> a -> a -> a -> a -> b) -> [a] -> b
 > applyList6 f (u:v:w:x:y:z:[]) = f u v w x y z
-

@@ -11,22 +11,22 @@ import Control.Concurrent
 import Util
 import Schema
 import Logger
-import Config
-
+import ValueTypes
 
 main :: IO ()
 main = do 
     putStrLn "Running dibs dev v1"
     let port = PortNumber 2420
     connQueue <- newBTCIO 500  -- new BoundedTChan for incoming connections
-    schema <- loadSchema
     logBTChan <- spawnLogger
-    let logFun = logmsg logBTChan
-    let config = ConfigData schema connQueue logFun Dbg
-    spawnWorkers config 10
+    let preliminaryConfig = ConfigData NoSchema connQueue logBTChan Dbg 
+    -- preliminaryConfig cannot yet have a valid schema stored in it 
+    schema <- loadSchemaIO preliminaryConfig
+    let finalConfig = ConfigData schema connQueue logBTChan Dbg
+    spawnWorkers finalConfig 50
     withSocketsDo $ do 
         listenSocket <- listenOn port
-        acceptLoop config listenSocket
+        acceptLoop finalConfig listenSocket
         return ()
 
 
@@ -37,7 +37,7 @@ acceptLoop config listenSocket =
         putBTCIO connQueue (MkNewConnection handle hostname port)
         return ()
    where
-    connQueue = getBTChan config
+    connQueue = getConnBTChan config
 
 spawnWorkers :: ConfigData -> Int -> IO ()
 spawnWorkers config numWorkers = do 
@@ -48,9 +48,9 @@ spawnWorkers config numWorkers = do
                spawnWorkers config (numWorkers-1)
                return ()
              
-spawnLogger :: IO (BoundedTChan (LogLevel, String))
+spawnLogger :: IO (BoundedTChan String)
 spawnLogger = do
-        btchan <- newBTCIO 500
+        btchan <- newBTCIO 5000
         forkIO (logger btchan)
         return btchan
         
