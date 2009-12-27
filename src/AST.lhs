@@ -20,6 +20,8 @@ that I don't yet understand.
 >       DibsCreate DibsAST DibsAST
 >       -- get table contents: name, list of columns 
 >       | DibsGet DibsAST DibsAST
+>       -- get table rows with condition: name, list of columns, bool conndition
+>       | DibsCondGet DibsAST DibsAST DibsAST  
 >       -- insert into table: name, list of columns, list of lists of values 
 >       | DibsInsert DibsAST DibsAST DibsAST 
 >       -- execute in order left, right
@@ -40,7 +42,7 @@ contain only one element. That element is returned. This is useful for AST
 nodes whose result is a single value, e.g. DibsLiteral or DibsIdentifier.
 
 > unpackSingleton :: [MultiValue] -> SingleValue
-> unpackSingleton (mv:[]) = snd . head . Map.toList . mValMap $ mv
+> unpackSingleton (mv:[]) = snd . head . Map.toList . mvValMap $ mv
 > unpackSingleton x = error ("Expected singleton but got: " ++ show x)
 > unpackSingletonM :: Txn [MultiValue] -> Txn SingleValue
 > unpackSingletonM mv = unpackSingleton `liftM` mv
@@ -93,57 +95,80 @@ Implementations of the behavior for each AST node.
 
 > buildTxn :: DibsAST -> Txn EvalResult
 > buildTxn (DibsSeq l r) = do
->       buildTxn l -- discard result of first expr (use side effects)
->       buildTxn r  -- return result of second expr
-> buildTxn (DibsCreate tableNameAST columnNamesAST) = do
->       tableName <- runForString tableNameAST
->       erColumnList <- runForList columnNamesAST
->       tlog Dbg ("Creating table " ++ tableName)
->       let columnList = map erToString erColumnList
->       success <- createTable tableName columnList
->       return $ SingleEvalResult . DibsBool $ success
+>   buildTxn l -- discard result of first expr (use side effects)
+>   buildTxn r  -- return result of second expr
 > buildTxn (DibsGet tableNameAST columnsAST) = do
->       tableName <- runForString tableNameAST
->       colNameListER <- runForList columnsAST
->       let colNameList = map erToString colNameListER
->       table <- getTableByName tableName
->       columns <- getColumnsByName table colNameList
->       multis <- columnsToMultis columns
->       return $ MVEvalResult multis
+>   tableName <- runForString tableNameAST
+>   colNameListER <- runForList columnsAST
+>   let colNameList = map erToString colNameListER
+>   table <- getTableByName tableName
+>   columns <- getColumnsByName table colNameList
+>   multis <- columnsToMultis columns
+>   return $ MVEvalResult multis
+> buildTxn (DibsCondGet tableName rows boolExpr) = do
+>   -- TODO: use a more efficient algorithm
+>   MVEvalResult uncondMvs <- buildTxn $ DibsGet tableName rows
+>   let tableNames = map mvTableName uncondMvs
+>   let colNames = map mvColName uncondMvs
+>   let tableDotColNames = map mvTableDotCol uncondMvs 
+>   -- We create bindings under names "table.col" and also just "col"
+>   let nameToColNumMap = Map.fromList $  
+>         (zip tableDotColNames [0..]) ++ (zip colNames [0..])
+>   let nameToColNum = \s -> case Map.lookup s nameToColNumMap of
+>           Just n -> n
+>           Nothing -> error $ "Cond get: nonexistent column: " ++ s 
+>   let uncondColLists = map mvList uncondMvs 
+>   let uncondRows = transpose uncondColLists
+>   condRows <- filterM (satisfies boolExpr nameToColNum nameToColNumMap) uncondRows
+>   let condColumns = map Map.fromList $ transpose condRows
+>   let namedColTuples = zip3 tableNames colNames condColumns
+>   let condMvs = map (\(tn, cn, col) -> MultiValue tn cn col) namedColTuples
+>   return $ MVEvalResult condMvs
+>  where
+>   satisfies :: DibsAST -> (String -> Int) -> Map String Int -> [(ID, SingleValue)] -> Txn Bool
+>   satisfies expr nameToCol nameToColMap vals = do 
+>       -- Evalute with a Scope that binds the variables in this row
+>       let rowSvMap = Map.map (\v -> snd $ vals !! v) nameToColMap
+>       let rowErMap = Map.map (SingleEvalResult) rowSvMap
+>       pushScope $ Scope rowErMap
+>       result <- buildTxn expr
+>       popScope
+>       case result of 
+>           SingleEvalResult (DibsBool b) -> return b
+>           otherwise -> txerror $ "Conditional get expression not boolean!"
 > buildTxn (DibsInsert tableNameAST namesAST rowsAST) = do
->       tableName <- runForString tableNameAST
->       nameListER <- runForList namesAST
->       let nameList = map erToString nameListER
->       nestedRowsER <- buildTxn rowsAST
->       let rows = erNest2ListToSv nestedRowsER
->               -- ^ convert nested ListEvalResult to [[SingleValue]]
->       tlog Dbg ("Inserting " ++ (show . length $ rows) 
->               ++ " into table " ++ tableName)
->       table <- getTableByName tableName
->       columns <- getColumnsByName table nameList
->       oldMultis <- columnsToMultis columns
->       nextID <- readTvTxn $ tNextID table
->       let insertMultis = rowsToMulti rows (nextID)
->       let combinedMultis = mvListUnion oldMultis insertMultis
->       mapM (\(c,mv) -> writeTvTxn (colMultiVal c) mv) $ zip columns combinedMultis
->       writeTvTxn (tNextID table) $ nextID + (fromIntegral (length rows))
->       return $ SingleEvalResult $ DibsBool True
->      where
->       erNest2ListToSv :: EvalResult -> [[SingleValue]]
->       erNest2ListToSv (ListEvalResult ers) = map erToListSV ers
->       erNest2ListToSv x = error ("Not a ListEvalResult: " ++ show x)
->--      where
->--       mapLook :: (Ord k) => Map k a -> k -> a  -- wrapper to deal with Monad
->--       mapLook m k = case Map.lookup k m of
->--               Just x -> x
->--               Nothing -> error "Unexpected missing key in DibsInsert"
->--       permute permutation l =  [l !! x | x <- permutation]
->--       namesToMultis (name:names) multis = 
->--         let tree = Map.nameToMulti name ++ namesToMultis names
+>   tableName <- runForString tableNameAST
+>   nameListER <- runForList namesAST
+>   let nameList = map erToString nameListER
+>   nestedRowsER <- buildTxn rowsAST
+>   let rows = erNest2ListToSv nestedRowsER
+>           -- ^ convert nested ListEvalResult to [[SingleValue]]
+>   tlog Dbg ("Inserting " ++ (show . length $ rows) 
+>           ++ " into table " ++ tableName)
+>   table <- getTableByName tableName
+>   columns <- getColumnsByName table nameList
+>   oldMultis <- columnsToMultis columns
+>   nextID <- readTvTxn $ tNextID table
+>   let insertMultis = rowsToMulti rows (nextID)
+>   let combinedMultis = mvListUnion oldMultis insertMultis
+>   mapM (\(c,mv) -> writeTvTxn (colMultiVal c) mv) $ zip columns combinedMultis
+>   writeTvTxn (tNextID table) $ nextID + (fromIntegral (length rows))
+>   return $ SingleEvalResult $ DibsBool True
+>  where
+>   erNest2ListToSv :: EvalResult -> [[SingleValue]]
+>   erNest2ListToSv (ListEvalResult ers) = map erToListSV ers
+>   erNest2ListToSv x = error ("Not a ListEvalResult: " ++ show x)
 > buildTxn (DibsIdentifier s) = return $ SingleEvalResult . DibsString $ s
 > buildTxn (DibsList l) = liftM ListEvalResult $ mapM buildTxn l
 > buildTxn (DibsTuple l) = liftM ListEvalResult $ mapM buildTxn l
 > buildTxn (DibsLiteral sv) = return $ SingleEvalResult sv
+> buildTxn (DibsCreate tableNameAST columnNamesAST) = do
+>   tableName <- runForString tableNameAST
+>   erColumnList <- runForList columnNamesAST
+>   tlog Dbg ("Creating table " ++ tableName)
+>   let columnList = map erToString erColumnList
+>   success <- createTable tableName columnList
+>   return $ SingleEvalResult . DibsBool $ success
 > buildTxn x = txerror ("Unimplemented \"buildTxn\" for: " ++ show x)
 
 Compute unions of MultiValues and lists of MultiValues
@@ -151,7 +176,8 @@ Compute unions of MultiValues and lists of MultiValues
 > mvUnion :: MultiValue -> MultiValue -> MultiValue
 > mvUnion mv1 mv2 = 
 >       let MultiValue tableName colName _ = mv1 -- take titles from 1st arg
->       in MultiValue tableName colName $ Map.union (mValMap mv1) (mValMap mv2)
+>       in MultiValue tableName colName $ 
+>           Map.union (mvValMap mv1) (mvValMap mv2)
 > mvListUnion :: [MultiValue] -> [MultiValue] -> [MultiValue]
 > mvListUnion [] [] = []
 > mvListUnion (h1:t1) (h2:t2) = mvUnion h1 h2 : mvListUnion t1 t2

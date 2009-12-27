@@ -78,7 +78,7 @@ This is the Read-Eval-Print Loop (REPL) run by worker threads.
 >             Right ast -> do
 >               hPutStrLn handle "Running transaction..."
 >               (result, logs) <- atomically $ runTxn config [] $ buildTxn ast
->               hPutStrLn handle $ "\nResult:\n============== "
+>               hPutStrLn handle $ "\nResult:\n=============="
 >               hPutStrLn handle $ render result
 >               hPutStrLn handle $ "=============="
 >               mapM (logFromEntry config) logs -- send txn log entries to logger

@@ -101,3 +101,17 @@ into a single string, and return the string as the payload of an error().
 >       tlog Err msg
 >       logmsgs <- Txn . lift . lift $ get 
 >       error $ unlines . reverse . map show $ logmsgs
+
+Add a new set of variable bindings to the scope.
+
+> pushScope :: Scope -> Txn ()
+> pushScope scope = do
+>       oldScope <- get
+>       put $ scope:oldScope
+
+Remove the most recent / innermost set of bindings from the scope.
+
+> popScope :: Txn ()
+> popScope = do
+>       (s:scopes) <- get
+>       put scopes
