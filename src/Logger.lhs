@@ -14,7 +14,7 @@ messages to be logged and go back to work.
 The logmsg function is called by other threads to log a message.
 
 > logmsg :: ConfigData -> LogLevel -> String -> IO ()
-> logmsg config msgLevel msg = do
+> logmsg config msgLevel msg = msgLevel `seq` msg `seq` do
 >       let minLevel = getConfLogLvl config
 >       let btchan = getLogBTChan config
 >       if msgLevel >= minLevel

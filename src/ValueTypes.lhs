@@ -19,13 +19,63 @@ A SingleValue is a primitive type of the dibs system, and represents a single
 cell of a table or MultiValue.
 
 > data SingleValue = DibsInt64 Int64 | DibsChar Char | DibsString String 
->                  | DibsBool Bool 
->       deriving (Show, Eq)
+>                  | DibsBool Bool | DibsDouble Double
+>       deriving (Show)
 > instance Render SingleValue where
 >   render (DibsInt64 x)  = show x
+>   render (DibsDouble x) = show x
 >   render (DibsChar x)   = show x
 >   render (DibsString x) = show x
 >   render (DibsBool x)   = show x
+> instance Num SingleValue where
+>   (+) (DibsInt64 x) (DibsInt64 y) = DibsInt64 $ x + y
+>   (+) (DibsInt64 x) (DibsDouble y) = DibsDouble $ fromIntegral x + y
+>   (+) x@(DibsDouble _) y@(DibsInt64 _) = y + x -- flip, use above definition
+>   (+) (DibsDouble x) (DibsDouble y) = DibsDouble $ x + y
+>   (+) x y = error $ "Invalid operands for +: " ++ show x ++ ", " ++ show y
+>   (-) x y = x + negate y
+>   (*) (DibsInt64 x) (DibsInt64 y) = DibsInt64 $ x * y
+>   (*) (DibsInt64 x) (DibsDouble y) = DibsDouble $ fromIntegral x * y
+>   (*) x@(DibsDouble _) y@(DibsInt64 _) = y * x
+>   (*) (DibsDouble x) (DibsDouble y) = DibsDouble $ x * y
+>   (*) x y = error $ "Invalid operands for *: " ++ show x ++ ", " ++ show y
+>   negate (DibsInt64 x) = DibsInt64 ((-1) * x)
+>   negate (DibsDouble x)  = DibsDouble ((-1.0) * x)
+>   negate x = error $ "Invalid operand to negate: " ++ show x
+>   abs (DibsInt64 x) = DibsInt64 $ abs x
+>   abs (DibsDouble d) = DibsDouble $ abs d
+>   abs x = error $ "Invalid operand to absolute value: " ++ show x
+>   signum x | x < 0 = DibsInt64 (-1)
+>   signum x | x > 0 = DibsInt64 1
+>   signum x | x == 0 = DibsInt64 0
+>   fromInteger x = DibsInt64 $ fromIntegral x
+
+> instance Ord SingleValue where
+>   compare x y | x == y = EQ
+>   compare (DibsInt64 x) (DibsInt64 y) = compare x y
+>   compare (DibsDouble x) (DibsDouble y) = compare x y
+>   compare (DibsInt64 x) (DibsDouble y) = compare (fromIntegral x) y
+>   compare l@(DibsDouble _) r@(DibsInt64 _) = compare r l -- reverse, use above def 
+>   compare x y = error $ "Type error in comparison between: \"" ++ show x 
+>       ++ "\" and \"" ++ show y ++ "\""
+
+> instance Eq SingleValue where
+>   (DibsInt64 x) == (DibsInt64 y) = x == y
+>   (DibsInt64 x) == (DibsDouble y) = fromIntegral x == y
+>   x@(DibsDouble _) == y@(DibsInt64 _) = y == x -- reverse and use previous def
+>   (DibsDouble x) == (DibsDouble y) = x == y
+>   (DibsBool x) == (DibsBool y) = x == y
+>   (DibsString x) == (DibsString y) = x == y
+>   (DibsChar x) == (DibsChar y) = x == y
+>   x == y = error $ "Can't evaluate equality between " ++ show x ++ " and "
+>       ++ show y
+
+> instance Fractional SingleValue where
+>   fromRational r = DibsDouble (fromRational r :: Double)
+>   (DibsInt64 x) / (DibsInt64 y) = DibsInt64 $ x `div` y
+>   (DibsInt64 x) / (DibsDouble y) = DibsDouble $ fromIntegral x / y
+>   (DibsDouble x) / (DibsInt64 y) = DibsDouble $ x / fromIntegral y
+>   (DibsDouble x) / (DibsDouble y) = DibsDouble $ x / y
 
 A unique ID for each row in a table.
 
@@ -93,7 +143,7 @@ A data type to capture a global configuration for the program.
 >           rowLists = transpose colLists 
 >           header = (joinList ", " $ map getMVName mvs) ++ "\n--------------"
 >       in
->       unlines $ header : (showRows rowLists)
+>       joinList "\n" $ header : (showRows rowLists)
 >      where
 >       getMVName mv = mvTableDotCol mv 
 >       showRows :: [[SingleValue]] -> [String]
@@ -103,18 +153,6 @@ A data type to capture a global configuration for the program.
 >   render (ListEvalResult svList) = 
 >       "[" ++ (renderJoin ", " svList) ++ "]"
 
-   render (MVEvalResult mvs) = -- for MVEvalResults, we want a nice table
-       let colLists = map flattenMV $ mvs  
-           rowLists = transpose colLists 
-           header = (joinList ", " $ map getMVName mvs) ++ "\n--------------"
-       in
-       showRows rowLists [header]
-      where
-       getMVName mv = (tableName mv) ++ "." ++ (colName mv) 
-       showRows :: [[SingleValue]] -> [String] -> String
-       showRows [] acc = unlines . reverse $ acc
-       showRows (r:rs) acc = showRows rs $ (renderJoin ", " r) : acc 
-
 A type class that will allow us to print tables of values for human consumption.
 
 > class (Show a) => Render a where
@@ -122,12 +160,15 @@ A type class that will allow us to print tables of values for human consumption.
 
 Join a list of lists into just a list, using "sep" as a separator between them.
 
-> joinList :: [a] -> [[a]] -> [a]
-> joinList sep = foldl1 (\acc s -> acc ++ sep ++ s)
+> joinList :: [a] -> [[a]] -> [a] -- TODO: lazier
+> --joinList sep l@(_:_) = foldl1 (\acc s -> acc ++ sep ++ s) l
+> joinList sep (x:(xs@(_:_))) = x ++ sep ++ joinList sep xs
+> joinList sep (x:[]) = x -- recursive base case
+> joinList sep [] = []  -- not base case, only used when called with empty list
 
 Render a list of renderable (member of type class Render) values, then join
 the resulting list of strings using the giving separator.
 
 > renderJoin :: (Render a) => String -> [a] -> String
-> renderJoin sep xs = joinList sep $ (map render xs)
-
+> renderJoin sep xs@(_:_) = joinList sep $ (map render xs)
+> renderJoin _ [] = error "renderJoin called with empty list"

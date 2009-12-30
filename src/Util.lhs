@@ -21,3 +21,14 @@ Apply a function to a list of arguments. Runtime error if list has wrong length.
 > applyList5 f (v:w:x:y:z:[]) = f v w x y z
 > applyList6 :: (a -> a -> a -> a -> a -> a -> b) -> [a] -> b
 > applyList6 f (u:v:w:x:y:z:[]) = f u v w x y z
+
+Take a 3-argument function and turn it into a function on 3-tuples.
+
+> uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
+> uncurry3 f (x, y, z) = f x y z
+
+> listCurry :: ([a] -> b) -> a -> a -> b
+> listCurry f x y = f [x,y]
+
+> listUncurry :: (a -> a -> c) -> [a] -> c
+> listUncurry f (x:y:[]) = f x y

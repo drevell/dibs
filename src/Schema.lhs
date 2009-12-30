@@ -107,6 +107,13 @@ Given a list of column names in a certain table, return the columns.
 >               Nothing -> error $ "No such column: " ++ name
 >               Just c -> c
 
+Get all columns in a given table.
+
+> getAllColumns :: Table -> Txn [Column]
+> getAllColumns (Table _ tableTv) = do
+>   tableMap <- readTvTxn tableTv
+>   return $ Prelude.map snd $ Map.toList tableMap
+
 Unpack a column or list of columns to get its underlying MultiValue
 
 > columnToMulti :: Column -> Txn MultiValue

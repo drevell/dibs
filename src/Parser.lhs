@@ -28,8 +28,9 @@ the DibsSeq expression sequence node across the list.
 
 > dqlParse :: String -> Either String DibsAST
 > dqlParse s = case parse exprListParser "" s of
->             Left err -> Left (show err)
->             Right astList -> Right $ Prelude.foldr1 DibsSeq astList
+>   Left err -> Left (show err)
+>   Right astList -> Right $ Prelude.foldr1 (\x y -> DibsSeq [x,y]) astList
+
 
 Temporary, parse only one expression.
 
@@ -55,6 +56,8 @@ token, and also consume and discard its trailing whitespace.
 > commaSep1  = PT.commaSep1 lexer
 > symbol     = PT.symbol lexer
 > stringLiteral = PT.stringLiteral lexer
+> charLiteral = PT.charLiteral lexer
+> naturalOrFloat = PT.naturalOrFloat lexer 
 
 Parse a string into a list of expressions, which correspond to the semicolon-
 separated expressions in the input.
@@ -64,8 +67,9 @@ separated expressions in the input.
 >       whiteSpace  -- parser automatically discards trailing (not leading) w.s.
 >       many1 (do {e <- expr ; semi ; return e})
 
-> dqlOperators = ["+", "*", "/", "-"]
-> dqlReserved = ["create", "get", "insert"]
+> dqlOperators = ["+", "*", "/", "-", "==", "!="]
+> dqlReserved = ["create", "get", "cond_get", "insert", "true", "false", 
+>       "allcolumns"]
 
 Create a lexer using Haskell standards for whitespace, identifiers, etc.
 
@@ -73,31 +77,52 @@ Create a lexer using Haskell standards for whitespace, identifiers, etc.
 > lexer = PT.makeTokenParser $ haskellDef { reservedOpNames = dqlOperators,
 >                                           reservedNames = dqlReserved}
 
-> factor :: Parser DibsAST
-> factor = parens expr 
->        <|> literalP
->        <?> "factor expr"
+> literalP = choice $ Prelude.map try 
+>       [numLiteralP, stringLiteralP, boolLiteralP, charLiteralP]
+> numLiteralP = do
+>   eitherIntFloat <- naturalOrFloat
+>   return $ DibsLiteral $ case eitherIntFloat of
+>       Left i -> DibsInt64 $ fromIntegral i
+>       Right f -> DibsDouble f
+> stringLiteralP = do
+>       str <- stringLiteral
+>       return $ DibsLiteral . DibsString $ str
+> boolLiteralP = do -- parse a "true" or "false" (but without quotes)
+>    boolVal <- choice $ Prelude.map try [ do {reserved "true" ; return True}
+>                                        , do {reserved "false" ; return False}] 
+>    return $ DibsLiteral . DibsBool $ boolVal
+> charLiteralP = do
+>    c <- charLiteral
+>    return $ DibsLiteral . DibsChar $ c
 
-> literalP :: Parser DibsAST
-> literalP = do
->         n <- natural
->         return $ DibsLiteral . DibsInt64 . fromIntegral $ n 
+>-- arithP :: Parser DibsAST
+>-- arithP = buildExpressionParser arithOperTable arithTerm <?> "expression"
+>
+>-- arithOperTable = 
+>--       let makeOp s astNode = Infix (do 
+>--                                       reservedOp s
+>--                                       return astNode) AssocLeft
+>--       in
+>--       [[makeOp "*" DibsMultiply, makeOp "/" DibsDivide]
+>--       ,[makeOp "+" DibsAdd, makeOp "-" DibsSubtract]
+>--       ,[makeOp "==" DibsEq, makeOp "!=" DibsNotEq]
+>--       ,[makeOp "<" DibsLessThan, makeOp ">" DibsGreaterThan]]
+>--
+>-- arithTerm :: Parser DibsAST
+>-- arithTerm = parens arithTerm
+>--        <|> try  
+>--        <|> literalP
+>--        <?> "term expression"
 
-
-> arithOperTable = 
->       let makeOp s astNode = Infix (do 
->                                       reservedOp s
->                                       return astNode) AssocLeft
->       in
->       [[makeOp "*" DibsMultiply, makeOp "/" DibsDivide]
->       ,[makeOp "+" DibsAdd, makeOp "-" DibsSubtract]]
-
-
-Stuff from Parsec documentation. It looks like the expressionParser is not 
-adequate for our purposes.
-
-> arithP :: Parser DibsAST
-> arithP = buildExpressionParser arithOperTable factor <?> "expression"
+>-- arithP = do
+>--   i <- case try expr of 
+>--       Left n -> try infixWithNat n
+>--       Right f -> try infixWithFloat
+>--
+>-- infixWithNat :: Integer -> Parser DibsAST
+>-- infixWithNat i = do
+>--   choice $ map try infixOpParsers
+>-- 
 
 Parses an identifier (according to the Parsec lexer) and returns it as a 
 DibsIdentifier
@@ -107,56 +132,105 @@ DibsIdentifier
 >       s <- identifier
 >       return $ DibsIdentifier s
 
-Parses a string literal, i.e. with double quotes
+To specify a list of columns to retrieve when doing a "get" or "cond_get", the
+client will give either an expression that evaluates to a list of column names,
+or the token "all".
 
-> stringP :: Parser DibsAST
-> stringP = do
->       str <- stringLiteral
->       return $ DibsLiteral . DibsString $ str
+> colSpecP = try (reserved "allcolumns" >> return DibsAllColumns)
+>       <|> expr
+
 
 A parser for built-in DQL functions. Goes through the list of possible functions
 and tries to parse each one.
 
 > dqlFunc :: Parser DibsAST
-> dqlFunc = (foldl1 (<|>) (Prelude.map try dqlFuncParsers))
-> dqlFuncParsers = [dqlGetP, dqlInsertP, dqlCreateP] -- ordered by likelihood
+> dqlFunc = choice $ Prelude.map try dqlFuncParsers
+> dqlFuncParsers = Prelude.map makeParser [
+>   ("create", DibsCreate, [stringLiteralP, listP stringLiteralP]),
+>   ("get", DibsGet, [stringLiteralP, colSpecP]),
+>   ("cond_get", DibsCondGet, [stringLiteralP, colSpecP, expr]),
+>   ("insert", DibsInsert, [stringLiteralP, 
+>                           listP stringLiteralP, listP (listP literalP)])]
+>--   (op, "==", DibsEq, [expr, expr]),
+>--   (op, "/=", DibsNotEq, [expr, expr]),
+>--   (op, "+", DibsAdd, [expr, expr]),
+>--   (op, "-", DibsSubtract, [expr, expr]),
+>--   (op, "*", DibsMultiply, [expr, expr]),
+>--   (op, "/", DibsDivide, [expr, expr])]
+>  where
+>   res = reserved
+>   op = reservedOp
+>   makeParser (str, constructor, argList) = do
+>       reserved str
+>       DibsTuple args <- tupleP argList
+>       return $ constructor args
 
+DEPRECATED
 Parsers for the various possible DQL functions.
-TODO: Factor out code, define each parser as a data structure
 
-> dqlCreateP, dqlGetP, dqlInsertP :: Parser DibsAST
-> dqlCreateP = do 
->       reserved "create"
->       argTuple <- tupleP [stringP, listP stringP]
->       let DibsTuple args = argTuple
->       return $ applyList2 DibsCreate args
-> dqlGetP = do
->       reserved "get"
->       argTuple <- tupleP [stringP, listP stringP]
->       let DibsTuple args = argTuple
->       return $ applyList2 DibsGet args
-> dqlInsertP = do
->       reserved "insert"
->       argTuple <- tupleP [stringP, listP stringP, listP (listP literalP)]
->       let DibsTuple args = argTuple
->       return $ applyList3 DibsInsert args
+ dqlCreateP, dqlGetP, dqlCondGetP, dqlInsertP :: Parser DibsAST
+ dqlCreateP = do 
+       reserved "create"
+       DibsTuple args  <- tupleP [stringLiteralP, listP stringLiteralP]
+       return $ applyList2 DibsCreate args
+ dqlGetP = do
+       reserved "get"
+       DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP]
+       return $ applyList2 DibsGet args
+ dqlCondGetP = do
+    reserved "cond_get"
+    DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP, expr]
+    return $ applyList3 DibsCondGet args
+ dqlInsertP = do
+       reserved "insert"
+       DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP, listP (listP literalP)]
+       return $ applyList3 DibsInsert args
+ dqlEqP = do
+   reservedOp "=="
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsEq args
+ dqlNotEqP = do
+   reservedOp "/=" -- TODO: change this (and lexer) to use != instead
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsNotEq args
+ dqlAddP = do
+   reserved "+"
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsAdd args
+ dqlSubtractP = do
+   reserved "-"
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsSubtract args
+ dqlMultiplyP = do
+   reserved "*"
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsMultiply args
+ dqlDivideP = do
+   reserved "/"
+   DibsTuple args <- tupleP [expr, expr]
+   return $ applyList2 DibsDivide args
 
 Parse a tuple, where the type of each element is given by the list argument.
 Since the tuple being parsed may have any size, we return the result as a list.
 
 > tupleP :: [Parser DibsAST] -> Parser DibsAST
-> tupleP ps = do  -- TODO: fold?
+> tupleP ps = do
 >       symbol "("
->       vs <- parseEntries [] ps
+>       vs <- parseEntries ps
 >       return $ DibsTuple vs
 >      where
->       parseEntries :: [DibsAST] -> [Parser DibsAST] -> Parser [DibsAST]
->       parseEntries acc (p:ps) = do
+>       parseEntries :: [Parser DibsAST] -> Parser [DibsAST]
+>       parseEntries (p:ps) = do
 >               v <- p
->               let newAcc = (v:acc)
 >               -- Either parse a comma and recurse, or parse ')' and stop
->               (<|>) (comma >> parseEntries newAcc ps) 
->                     (symbol ")" >> return (reverse newAcc))
+>               (<|>) (do comma
+>                         vs <- parseEntries ps
+>                         return (v:vs)) 
+>                     (do symbol ")"
+>                         case ps of
+>                             [] -> return [v]
+>                             _  -> fail "Not enough arguments")
+>       parseEntries [] = fail "Too many arguments"
 
 > listP :: Parser DibsAST -> Parser DibsAST
 > listP p = do
@@ -164,10 +238,36 @@ Since the tuple being parsed may have any size, we return the result as a list.
 >       return $ DibsList exprs
 
 > expr :: Parser DibsAST
-> expr = try (parens expr)
+> expr = try infixExpr <|> try exprNoInfix
+> exprNoInfix = try (parens expr)
 >    <|> try dqlFunc
->    <|> try arithP
+>    <|> try identP
+>    <|> try literalP
 >    <?> "expression" 
+
+To parse infix expressions, we use Parsec's built-in expression parser which
+automatically generates a left-factored grammar that works around issues with
+recursive grammars.
+
+> infixExpr :: Parser DibsAST
+> infixExpr = buildExpressionParser infixOps infixTerm
+> infixOps = [[Infix times AssocLeft, Infix divide AssocLeft], 
+>             [Infix plus AssocLeft, Infix minus AssocLeft],
+>             [Infix equals AssocLeft, Infix notEquals AssocLeft,
+>              Infix lessThan AssocLeft, Infix lessThanOrEqual AssocLeft, 
+>              Infix greaterThan AssocLeft, Infix greaterOrEqual AssocLeft]] 
+>                
+> infixTerm = exprNoInfix -- have to prevent recursion, no infix allowed
+> times = reservedOp "*" >> return (listCurry DibsMultiply)
+> plus = reservedOp "+" >> return (listCurry DibsAdd)
+> minus = reservedOp "-" >> return (listCurry DibsSubtract)
+> divide = reservedOp "/" >> return (listCurry DibsDivide)
+> equals = reservedOp "==" >> return (listCurry DibsEq)
+> notEquals = reservedOp "!=" >> return (listCurry DibsNotEq)
+> lessThan = reservedOp "<" >> return (listCurry DibsLessThan)
+> lessThanOrEqual = reservedOp "<=" >> return (listCurry DibsLessThanOrEq)
+> greaterThan = reservedOp ">" >> return (listCurry DibsGreaterThan)
+> greaterOrEqual = reservedOp ">=" >> return (listCurry DibsGreaterThanOrEq)
 
 Fake parsing code for avoiding Parsec and doing simple tests
 
@@ -180,15 +280,15 @@ Fake parsing code for avoiding Parsec and doing simple tests
 > exampleCreate :: String -> Either String DibsAST
 > exampleCreate s = let tablename = DibsLiteral $ DibsString "mytable"
 >                       colnames = DibsList [DibsLiteral $ DibsString "mycol"]
->                   in Right $ DibsCreate tablename colnames
+>                   in Right $ DibsCreate [tablename, colnames]
 >
 > exampleGet :: String -> Either String DibsAST
 > exampleGet s = let tablename = DibsLiteral $ DibsString "mytable"
 >                    colnames = DibsList [DibsLiteral $ DibsString "mycol"]
->                in Right $ DibsGet tablename colnames
+>                in Right $ DibsGet [tablename, colnames]
 >
 > exampleInsert :: String -> Either String DibsAST
 > exampleInsert s = let tablename = DibsLiteral $ DibsString "mytable"
 >                       colnames = DibsList [DibsLiteral $ DibsString "mycol"]
 >                       values = DibsList $ [DibsList [DibsLiteral $ DibsInt64 13]]
->                   in Right $ DibsInsert tablename colnames values
+>                   in Right $ DibsInsert [tablename, colnames, values]

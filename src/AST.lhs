@@ -14,28 +14,59 @@ that I don't yet understand.
 > import ValueTypes
 > import Txn
 > import Logger
+> import Util
+
+ data DibsAST = 
+       -- create table: name, list of pairs (name,type)
+       DibsCreate DibsAST DibsAST
+       -- get table contents: name, list of columns 
+       | DibsGet DibsAST DibsAST
+       -- get table rows with condition: name, list of columns, bool conndition
+       | DibsCondGet DibsAST DibsAST DibsAST  
+       -- insert into table: name, list of columns, list of lists of values 
+       | DibsInsert DibsAST DibsAST DibsAST 
+       -- execute in order left, right
+       | DibsSeq DibsAST DibsAST
+       | DibsLessThan DibsAST DibsAST
+       | DibsGreaterThan DibsAST DibsAST
+       -- 
+       | DibsIdentifier String
+       | DibsMultiply DibsAST DibsAST
+       | DibsDivide DibsAST DibsAST
+       | DibsAdd DibsAST DibsAST
+       | DibsSubtract DibsAST DibsAST
+       | DibsEq DibsAST DibsAST
+       | DibsNotEq DibsAST DibsAST
+       | DibsLiteral SingleValue
+       | DibsList [DibsAST]
+       | DibsTuple [DibsAST]
+       deriving (Show)
 
 > data DibsAST = 
->       -- create table: name, list of pairs (name,type)
->       DibsCreate DibsAST DibsAST
->       -- get table contents: name, list of columns 
->       | DibsGet DibsAST DibsAST
->       -- get table rows with condition: name, list of columns, bool conndition
->       | DibsCondGet DibsAST DibsAST DibsAST  
->       -- insert into table: name, list of columns, list of lists of values 
->       | DibsInsert DibsAST DibsAST DibsAST 
->       -- execute in order left, right
->       | DibsSeq DibsAST DibsAST
->       -- 
->       | DibsIdentifier String
->       | DibsMultiply DibsAST DibsAST
->       | DibsDivide DibsAST DibsAST
->       | DibsAdd DibsAST DibsAST
->       | DibsSubtract DibsAST DibsAST
->       | DibsLiteral SingleValue
+>       -- Internal nodes of the AST take a [DibsAST] as an argument
+>       DibsCreate [DibsAST]
+>       | DibsGet [DibsAST] 
+>       | DibsCondGet [DibsAST]  
+>       | DibsInsert [DibsAST] 
+>       | DibsSeq [DibsAST]
+>       | DibsLessThan [DibsAST]
+>       | DibsGreaterThan [DibsAST]
+>       | DibsLessThanOrEq [DibsAST]
+>       | DibsGreaterThanOrEq [DibsAST]
+>       | DibsMultiply [DibsAST]
+>       | DibsDivide [DibsAST]
+>       | DibsAdd [DibsAST]
+>       | DibsSubtract [DibsAST]
+>       | DibsEq [DibsAST]
+>       | DibsNotEq [DibsAST]
 >       | DibsList [DibsAST]
 >       | DibsTuple [DibsAST]
+>       -- Leaves of the AST, that do not take [DibsAST] as arguments
+>       | DibsIdentifier String
+>       | DibsLiteral SingleValue
+>       | DibsAllColumns
 >       deriving (Show)
+
 
 Takes a list of multivalues containing one multivalue. That multivalue should
 contain only one element. That element is returned. This is useful for AST
@@ -72,7 +103,11 @@ be an error.
 
 > erToSingleVal :: EvalResult -> SingleValue
 > erToSingleVal (SingleEvalResult v) = v
-> erToSingleVal x = error ("Cannot reduce to single value: " ++ show x)
+> erToSingleVal (ListEvalResult [x]) = erToSingleVal x
+> erToSingleVal (MVEvalResult [mv]) | Map.size (mvValMap mv) == 1 = 
+>   head $ Map.elems (mvValMap mv)
+> erToSingleVal x = error $ "Cannot represent as single value: \"" 
+>   ++ show x ++ "\""
 
 > erToListSV :: EvalResult -> [SingleValue]
 > erToListSV (ListEvalResult l) = map erToSingleVal l
@@ -91,23 +126,66 @@ be an error.
 >       let ListEvalResult l = vs
 >       return l
 
-Implementations of the behavior for each AST node.
+Many dibs operations sum, difference, equality, etc can be expressed as a
+function over a list of values which are the results of subexpressions. This
+function gives us a concise way to reuse this pattern. 
+
+Example: a sum would be: genericDibsOp sum [leftAST,rightAST]
+
+SingleValue is an instance of Num and Ord, so any functions on those classes
+can be used.
+
+> genericDibsOp :: ([SingleValue] -> SingleValue) -> [DibsAST] -> Txn EvalResult
+> genericDibsOp f subexprs = do
+>   erList <- mapM buildTxn subexprs
+>   let svList = map erToSingleVal erList
+>   return $ SingleEvalResult $ f svList
+
+> filterMVsByColName :: [String] -> [MultiValue] -> [MultiValue]
+> filterMVsByColName _ [] = []
+> filterMVsByColName colNames (mv:mvs) = 
+>   let mvName = mvColName mv
+>   in
+>   if mvName `elem` colNames
+>       then mv:(filterMVsByColName colNames mvs)
+>       else filterMVsByColName colNames mvs 
+
+Implementations of the behavior for each AST node. Should be loosely ordered
+by popularity.
 
 > buildTxn :: DibsAST -> Txn EvalResult
-> buildTxn (DibsSeq l r) = do
+> buildTxn (DibsLessThan args@[l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (<) xs) args
+> buildTxn (DibsGreaterThan args@[l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (>) xs) args
+> buildTxn (DibsLessThanOrEq args@[l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (<=) xs) args
+> buildTxn (DibsGreaterThanOrEq args@[l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (>=) xs) args
+> buildTxn (DibsEq [l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (==) xs) [l,r]
+> buildTxn (DibsNotEq [l,r]) = 
+>   genericDibsOp (\xs -> DibsBool $ listUncurry (/=) xs) [l,r]
+> buildTxn (DibsSeq [l,r]) = do
 >   buildTxn l -- discard result of first expr (use side effects)
 >   buildTxn r  -- return result of second expr
-> buildTxn (DibsGet tableNameAST columnsAST) = do
+> buildTxn (DibsGet [tableNameAST,columnsAST]) = do
 >   tableName <- runForString tableNameAST
->   colNameListER <- runForList columnsAST
->   let colNameList = map erToString colNameListER
 >   table <- getTableByName tableName
->   columns <- getColumnsByName table colNameList
+>   columns <- case columnsAST of
+>       DibsAllColumns ->
+>           getAllColumns table :: Txn [Column]
+>       _ -> do 
+>           colNameListER <- runForList columnsAST
+>           let colNameList = map erToString colNameListER
+>           getColumnsByName table colNameList
 >   multis <- columnsToMultis columns
 >   return $ MVEvalResult multis
-> buildTxn (DibsCondGet tableName rows boolExpr) = do
->   -- TODO: use a more efficient algorithm
->   MVEvalResult uncondMvs <- buildTxn $ DibsGet tableName rows
+> buildTxn (DibsCondGet [tableNameAST,colsAST,boolExpr]) = do
+>   -- TODO: use a more efficient algorithm (last stage might be O(n log n)?)
+>   tlog Dbg "DibsCondGet starting"
+>   MVEvalResult uncondMvs <- buildTxn $ DibsGet [tableNameAST,DibsAllColumns]
+>   tlog Dbg $ "Got unconditional results, num mvs: " ++ show (length uncondMvs)
 >   let tableNames = map mvTableName uncondMvs
 >   let colNames = map mvColName uncondMvs
 >   let tableDotColNames = map mvTableDotCol uncondMvs 
@@ -119,11 +197,25 @@ Implementations of the behavior for each AST node.
 >           Nothing -> error $ "Cond get: nonexistent column: " ++ s 
 >   let uncondColLists = map mvList uncondMvs 
 >   let uncondRows = transpose uncondColLists
+>   tlog Dbg $ "nameToColNumMap: " ++ show (Map.toList nameToColNumMap) 
+>   tlog Dbg "Starting cond_get filtering"
 >   condRows <- filterM (satisfies boolExpr nameToColNum nameToColNumMap) uncondRows
->   let condColumns = map Map.fromList $ transpose condRows
->   let namedColTuples = zip3 tableNames colNames condColumns
->   let condMvs = map (\(tn, cn, col) -> MultiValue tn cn col) namedColTuples
->   return $ MVEvalResult condMvs
+>   tlog Dbg $ "uncondRows: " ++ show uncondRows
+>   tlog Dbg $ "condRows: " ++ show condRows
+>   let condColumns = case condRows of
+>           [] -> take (length uncondMvs) (repeat []) -- need right # of cols
+>           _  -> transpose condRows
+>   let condMaps = map Map.fromList $ condColumns
+>   let condMvs = map (uncurry3 MultiValue) $ zip3 tableNames colNames condMaps
+>   filteredCondMvs <- case colsAST of
+>           DibsAllColumns -> return condMvs
+>           _ -> do
+>               colNameList <- runForList colsAST
+>               let colNames = map erToString colNameList
+>               return $ filterMVsByColName colNames condMvs
+>   tlog Dbg "Encapsulating cond_get result in MVs and returning"
+>   tlog Dbg $ "filteredCondMvs: " ++ show filteredCondMvs
+>   return $ MVEvalResult filteredCondMvs
 >  where
 >   satisfies :: DibsAST -> (String -> Int) -> Map String Int -> [(ID, SingleValue)] -> Txn Bool
 >   satisfies expr nameToCol nameToColMap vals = do 
@@ -136,7 +228,7 @@ Implementations of the behavior for each AST node.
 >       case result of 
 >           SingleEvalResult (DibsBool b) -> return b
 >           otherwise -> txerror $ "Conditional get expression not boolean!"
-> buildTxn (DibsInsert tableNameAST namesAST rowsAST) = do
+> buildTxn (DibsInsert [tableNameAST,namesAST,rowsAST]) = do
 >   tableName <- runForString tableNameAST
 >   nameListER <- runForList namesAST
 >   let nameList = map erToString nameListER
@@ -144,7 +236,7 @@ Implementations of the behavior for each AST node.
 >   let rows = erNest2ListToSv nestedRowsER
 >           -- ^ convert nested ListEvalResult to [[SingleValue]]
 >   tlog Dbg ("Inserting " ++ (show . length $ rows) 
->           ++ " into table " ++ tableName)
+>           ++ " rows into table " ++ tableName)
 >   table <- getTableByName tableName
 >   columns <- getColumnsByName table nameList
 >   oldMultis <- columnsToMultis columns
@@ -158,18 +250,24 @@ Implementations of the behavior for each AST node.
 >   erNest2ListToSv :: EvalResult -> [[SingleValue]]
 >   erNest2ListToSv (ListEvalResult ers) = map erToListSV ers
 >   erNest2ListToSv x = error ("Not a ListEvalResult: " ++ show x)
-> buildTxn (DibsIdentifier s) = return $ SingleEvalResult . DibsString $ s
+> buildTxn (DibsIdentifier s) = getVar s
 > buildTxn (DibsList l) = liftM ListEvalResult $ mapM buildTxn l
 > buildTxn (DibsTuple l) = liftM ListEvalResult $ mapM buildTxn l
 > buildTxn (DibsLiteral sv) = return $ SingleEvalResult sv
-> buildTxn (DibsCreate tableNameAST columnNamesAST) = do
+> buildTxn (DibsAdd [leftAST,rightAST]) = genericDibsOp sum [leftAST, rightAST]
+> buildTxn (DibsSubtract [leftAST,rightAST]) = 
+>   genericDibsOp (\[l,r] -> l-r) [leftAST, rightAST]
+> buildTxn (DibsMultiply [leftAST,rightAST]) = genericDibsOp product [leftAST, rightAST]
+> buildTxn (DibsDivide [leftAST,rightAST]) = 
+>   genericDibsOp (\[l,r] -> l / r) [leftAST, rightAST]
+> buildTxn (DibsCreate [tableNameAST,columnNamesAST]) = do
 >   tableName <- runForString tableNameAST
 >   erColumnList <- runForList columnNamesAST
 >   tlog Dbg ("Creating table " ++ tableName)
 >   let columnList = map erToString erColumnList
 >   success <- createTable tableName columnList
 >   return $ SingleEvalResult . DibsBool $ success
-> buildTxn x = txerror ("Unimplemented \"buildTxn\" for: " ++ show x)
+> buildTxn x = txerror $ "Unimplemented \"buildTxn\" for: " ++ show x
 
 Compute unions of MultiValues and lists of MultiValues
 
