@@ -15,6 +15,12 @@ that I don't yet understand.
 > import Txn
 > import Logger
 > import Util
+> import qualified Data.ByteString.Lazy as B
+> import Data.ByteString.Lazy (ByteString)
+> import qualified Data.ByteString.Lazy.Char8 as BC
+> import Data.Binary
+> import qualified Data.Char
+
 
  data DibsAST = 
        -- create table: name, list of pairs (name,type)
@@ -42,30 +48,6 @@ that I don't yet understand.
        | DibsTuple [DibsAST]
        deriving (Show)
 
-> data DibsAST = 
->       -- Internal nodes of the AST take a [DibsAST] as an argument
->       DibsCreate [DibsAST]
->       | DibsGet [DibsAST] 
->       | DibsCondGet [DibsAST]  
->       | DibsInsert [DibsAST] 
->       | DibsSeq [DibsAST]
->       | DibsLessThan [DibsAST]
->       | DibsGreaterThan [DibsAST]
->       | DibsLessThanOrEq [DibsAST]
->       | DibsGreaterThanOrEq [DibsAST]
->       | DibsMultiply [DibsAST]
->       | DibsDivide [DibsAST]
->       | DibsAdd [DibsAST]
->       | DibsSubtract [DibsAST]
->       | DibsEq [DibsAST]
->       | DibsNotEq [DibsAST]
->       | DibsList [DibsAST]
->       | DibsTuple [DibsAST]
->       -- Leaves of the AST, that do not take [DibsAST] as arguments
->       | DibsIdentifier String
->       | DibsLiteral SingleValue
->       | DibsAllColumns
->       deriving (Show)
 
 
 Takes a list of multivalues containing one multivalue. That multivalue should
@@ -304,3 +286,99 @@ did not derive from a table, yet still requires a value for those fields.
 >-- boxAsMulti (DibsChar c)   = MultiChar   "_" "_" $ Map.insert 0 c Map.empty
 >-- boxAsMulti (DibsBool b)   = MultiBool   "_" "_" $ Map.insert 0 b Map.empty
 >-- boxAsMulti (DibsString s) = MultiString "_" "_" $ Map.insert 0 s Map.empty
+
+Convert a transaction AST tree to an external binary format suitable for a
+transaction log.
+
+> toTxnLog :: DibsAST -> ByteString
+> toTxnLog = encode 
+
+> idForAST (DibsCreate args)          = (1, Just args)
+> idForAST (DibsGet args)             = (2, Just args)
+> idForAST (DibsCondGet args)         = (3, Just args) 
+> idForAST (DibsInsert args)          = (4, Just args) 
+> idForAST (DibsSeq args)             = (5, Just args)
+> idForAST (DibsLessThan args)        = (6, Just args)
+> idForAST (DibsGreaterThan args)     = (7, Just args)
+> idForAST (DibsGreaterThanOrEq args) = (8, Just args)
+> idForAST (DibsLessThanOrEq args)    = (9, Just args)
+> idForAST (DibsMultiply args)        = (10, Just args)
+> idForAST (DibsDivide args)          = (11, Just args)
+> idForAST (DibsAdd args)             = (12, Just args)
+> idForAST (DibsSubtract args)        = (13, Just args)
+> idForAST (DibsEq args)              = (14, Just args)
+> idForAST (DibsNotEq args)           = (15, Just args)
+> idForAST (DibsList args)            = (16, Just args)
+> idForAST (DibsTuple args)           = (17, Just args)
+> idForAST (DibsIdentifier _)         = (18, Nothing)
+> idForAST (DibsLiteral _)            = (19, Nothing)
+> idForAST (DibsAllColumns)           = (20, Nothing)
+
+> constructorForId 1                  = DibsCreate
+> constructorForId 2                  = DibsGet
+> constructorForId 3                  = DibsCondGet
+> constructorForId 4                  = DibsInsert
+> constructorForId 5                  = DibsSeq
+> constructorForId 6                  = DibsLessThan
+> constructorForId 7                  = DibsGreaterThan
+> constructorForId 8                  = DibsGreaterThanOrEq
+> constructorForId 9                  = DibsLessThanOrEq
+> constructorForId 10                 = DibsMultiply
+> constructorForId 11                 = DibsDivide
+> constructorForId 12                 = DibsAdd
+> constructorForId 13                 = DibsSubtract
+> constructorForId 14                 = DibsEq
+> constructorForId 15                 = DibsNotEq
+> constructorForId 16                 = DibsList
+> constructorForId 17                 = DibsTuple
+
+> instance Binary DibsAST where
+>   put ast@(DibsIdentifier s) = do 
+>       let (id, _) = idForAST ast 
+>       putWord8 id
+>       put $ BC.pack s
+>   put ast@(DibsLiteral sv) = do 
+>       let (id, _) = idForAST ast
+>       putWord8 id
+>       put sv
+>   put ast@DibsAllColumns = do
+>       let (id, _) = idForAST ast
+>       putWord8 id
+>   -- All other constructors are standard, their arg is just [DibsAST]
+>   put ast = do 
+>       let (id, Just args) = idForAST ast
+>       putWord8 id
+>       put args
+>   get = do
+>           id <- getWord8
+>           case id of
+>               18 -> do -- DibsIdentifier String
+>                   nameBS <- get
+>                   let name = BC.unpack nameBS
+>                   return $ DibsIdentifier name
+>               19 -> do -- DibsLiteral SingleValue
+>                   sv <- get :: Get SingleValue
+>                   return $ DibsLiteral sv
+>               20 -> do -- DibsAllColumns
+>                   return DibsAllColumns
+>               _ -> do
+>                   args <- get :: Get [DibsAST]
+>                   return $ (constructorForId id) args
+
+ASTs have a compact binary representation that is good for quick parsing.
+
+>-- instance BinConvert DibsAST where
+>-- toBin ast@(DibsIdentifier s) = idForAST ast `parensWith` [pack s] 
+>-- toBin ast@(DibsLiteral sv) = idForAST ast `parensWith` [svToBin sv]
+>-- toBin ast@(DibsAllColumns) = idForAST ast `parensWith` [B.empty]  
+> -- All other AST constructors have a standard [DibsAST] argument list
+>-- toBin ast = let (id, args) = idForAST ast in
+>--       genericBin id (map toBin args)
+
+Most AST nodes require this operation for conversion to binary, so it's factored
+out here.
+
+>-- genericBin :: Word8 -> [DibsAST] -> ByteString
+>-- genericBin n xs =
+>--   n `parensWith` (map toBin xs)
+ 

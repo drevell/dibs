@@ -14,6 +14,9 @@ of circular imports.
 > import BoundedTChan
 > import Util
 > import List
+> import qualified Data.ByteString
+> import Data.Binary
+> import Monad
 
 A SingleValue is a primitive type of the dibs system, and represents a single
 cell of a table or MultiValue.
@@ -49,7 +52,6 @@ cell of a table or MultiValue.
 >   signum x | x > 0 = DibsInt64 1
 >   signum x | x == 0 = DibsInt64 0
 >   fromInteger x = DibsInt64 $ fromIntegral x
-
 > instance Ord SingleValue where
 >   compare x y | x == y = EQ
 >   compare (DibsInt64 x) (DibsInt64 y) = compare x y
@@ -58,7 +60,6 @@ cell of a table or MultiValue.
 >   compare l@(DibsDouble _) r@(DibsInt64 _) = compare r l -- reverse, use above def 
 >   compare x y = error $ "Type error in comparison between: \"" ++ show x 
 >       ++ "\" and \"" ++ show y ++ "\""
-
 > instance Eq SingleValue where
 >   (DibsInt64 x) == (DibsInt64 y) = x == y
 >   (DibsInt64 x) == (DibsDouble y) = fromIntegral x == y
@@ -69,14 +70,28 @@ cell of a table or MultiValue.
 >   (DibsChar x) == (DibsChar y) = x == y
 >   x == y = error $ "Can't evaluate equality between " ++ show x ++ " and "
 >       ++ show y
-
 > instance Fractional SingleValue where
 >   fromRational r = DibsDouble (fromRational r :: Double)
 >   (DibsInt64 x) / (DibsInt64 y) = DibsInt64 $ x `div` y
 >   (DibsInt64 x) / (DibsDouble y) = DibsDouble $ fromIntegral x / y
 >   (DibsDouble x) / (DibsInt64 y) = DibsDouble $ x / fromIntegral y
 >   (DibsDouble x) / (DibsDouble y) = DibsDouble $ x / y
-
+> instance Binary SingleValue where
+>   put (DibsInt64 x) = putWord8 1 >> put x
+>   put (DibsDouble x) = putWord8 2 >> put x
+>   put (DibsBool x) = putWord8 3 >> put x
+>   put (DibsString x) = putWord8 4 >> put x
+>   put (DibsChar x) = putWord8 5 >> put x
+>   get = do
+>       id <- getWord8
+>       case id of
+>           1 -> get >>= \x -> (return $ DibsInt64 x)
+>           2 -> get >>= \x -> (return $ DibsDouble x)
+>           3 -> get >>= \x -> (return $ DibsBool x)
+>           4 -> get >>= \x -> (return $ DibsString x)
+>           5 -> get >>= \x -> (return $ DibsChar x)
+>           x -> error $ "Unrecognized SingleValue binary id: " ++ show x
+ 
 A unique ID for each row in a table.
 
 > type ID = Int64
@@ -128,10 +143,13 @@ storage in these types is intended to be strict.
 A data type to capture a global configuration for the program.
 
 > data ConfigData = ConfigData 
->                 { getConfSchema :: Schema
->                 , getConnBTChan :: BoundedTChan NewConnection -- connection queue
->                 , getLogBTChan :: BoundedTChan String
->                 , getConfLogLvl :: LogLevel}  -- log level (threshold)
+>                 { confSchema :: Schema
+>                 , connBTChan :: BoundedTChan NewConnection -- connection queue
+>                 , logBTChan :: BoundedTChan String
+>                 , confLogLvl :: LogLevel  -- log level (threshold)
+>                 , persistLoc :: PersistLocation
+>                 , persistBTChan :: BoundedTChan (Maybe (TVar Bool),DibsAST)
+>                 , durability :: Durability}
 
 > data EvalResult = SingleEvalResult SingleValue
 >                 | MVEvalResult [MultiValue]
@@ -172,3 +190,41 @@ the resulting list of strings using the giving separator.
 > renderJoin :: (Render a) => String -> [a] -> String
 > renderJoin sep xs@(_:_) = joinList sep $ (map render xs)
 > renderJoin _ [] = error "renderJoin called with empty list"
+
+A "persistence location" is the place where transactions are logged so that they
+can be restored after a shutdown or crash. This can be a disk file or a network
+socket.
+
+> data PersistLocation = PersistFile String | PersistSocket HostName PortNumber
+
+A "durability level" controls whether the worker waits until the transaction is
+persisted to disk before telling the client that the transaction has committed.
+
+> data Durability = WriteThrough | WriteBack
+
+Each constructor of the DibsAST type represents a different AST node.
+
+> data DibsAST = 
+>       -- Internal nodes of the AST take a [DibsAST] as an argument
+>       DibsCreate [DibsAST]
+>       | DibsGet [DibsAST] 
+>       | DibsCondGet [DibsAST]  
+>       | DibsInsert [DibsAST] 
+>       | DibsSeq [DibsAST]
+>       | DibsLessThan [DibsAST]
+>       | DibsGreaterThan [DibsAST]
+>       | DibsLessThanOrEq [DibsAST]
+>       | DibsGreaterThanOrEq [DibsAST]
+>       | DibsMultiply [DibsAST]
+>       | DibsDivide [DibsAST]
+>       | DibsAdd [DibsAST]
+>       | DibsSubtract [DibsAST]
+>       | DibsEq [DibsAST]
+>       | DibsNotEq [DibsAST]
+>       | DibsList [DibsAST]
+>       | DibsTuple [DibsAST]
+>       -- Leaves of the AST, that do not take [DibsAST] as arguments
+>       | DibsIdentifier String
+>       | DibsLiteral SingleValue
+>       | DibsAllColumns
+>       deriving (Show)

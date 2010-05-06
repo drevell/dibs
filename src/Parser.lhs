@@ -69,7 +69,7 @@ separated expressions in the input.
 
 > dqlOperators = ["+", "*", "/", "-", "==", "!="]
 > dqlReserved = ["create", "get", "cond_get", "insert", "true", "false", 
->       "allcolumns"]
+>       "all"]
 
 Create a lexer using Haskell standards for whitespace, identifiers, etc.
 
@@ -95,35 +95,6 @@ Create a lexer using Haskell standards for whitespace, identifiers, etc.
 >    c <- charLiteral
 >    return $ DibsLiteral . DibsChar $ c
 
->-- arithP :: Parser DibsAST
->-- arithP = buildExpressionParser arithOperTable arithTerm <?> "expression"
->
->-- arithOperTable = 
->--       let makeOp s astNode = Infix (do 
->--                                       reservedOp s
->--                                       return astNode) AssocLeft
->--       in
->--       [[makeOp "*" DibsMultiply, makeOp "/" DibsDivide]
->--       ,[makeOp "+" DibsAdd, makeOp "-" DibsSubtract]
->--       ,[makeOp "==" DibsEq, makeOp "!=" DibsNotEq]
->--       ,[makeOp "<" DibsLessThan, makeOp ">" DibsGreaterThan]]
->--
->-- arithTerm :: Parser DibsAST
->-- arithTerm = parens arithTerm
->--        <|> try  
->--        <|> literalP
->--        <?> "term expression"
-
->-- arithP = do
->--   i <- case try expr of 
->--       Left n -> try infixWithNat n
->--       Right f -> try infixWithFloat
->--
->-- infixWithNat :: Integer -> Parser DibsAST
->-- infixWithNat i = do
->--   choice $ map try infixOpParsers
->-- 
-
 Parses an identifier (according to the Parsec lexer) and returns it as a 
 DibsIdentifier
 
@@ -136,7 +107,7 @@ To specify a list of columns to retrieve when doing a "get" or "cond_get", the
 client will give either an expression that evaluates to a list of column names,
 or the token "all".
 
-> colSpecP = try (reserved "allcolumns" >> return DibsAllColumns)
+> colSpecP = try (reserved "all" >> return DibsAllColumns)
 >       <|> expr
 
 
@@ -151,12 +122,6 @@ and tries to parse each one.
 >   ("cond_get", DibsCondGet, [stringLiteralP, colSpecP, expr]),
 >   ("insert", DibsInsert, [stringLiteralP, 
 >                           listP stringLiteralP, listP (listP literalP)])]
->--   (op, "==", DibsEq, [expr, expr]),
->--   (op, "/=", DibsNotEq, [expr, expr]),
->--   (op, "+", DibsAdd, [expr, expr]),
->--   (op, "-", DibsSubtract, [expr, expr]),
->--   (op, "*", DibsMultiply, [expr, expr]),
->--   (op, "/", DibsDivide, [expr, expr])]
 >  where
 >   res = reserved
 >   op = reservedOp
@@ -164,51 +129,6 @@ and tries to parse each one.
 >       reserved str
 >       DibsTuple args <- tupleP argList
 >       return $ constructor args
-
-DEPRECATED
-Parsers for the various possible DQL functions.
-
- dqlCreateP, dqlGetP, dqlCondGetP, dqlInsertP :: Parser DibsAST
- dqlCreateP = do 
-       reserved "create"
-       DibsTuple args  <- tupleP [stringLiteralP, listP stringLiteralP]
-       return $ applyList2 DibsCreate args
- dqlGetP = do
-       reserved "get"
-       DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP]
-       return $ applyList2 DibsGet args
- dqlCondGetP = do
-    reserved "cond_get"
-    DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP, expr]
-    return $ applyList3 DibsCondGet args
- dqlInsertP = do
-       reserved "insert"
-       DibsTuple args <- tupleP [stringLiteralP, listP stringLiteralP, listP (listP literalP)]
-       return $ applyList3 DibsInsert args
- dqlEqP = do
-   reservedOp "=="
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsEq args
- dqlNotEqP = do
-   reservedOp "/=" -- TODO: change this (and lexer) to use != instead
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsNotEq args
- dqlAddP = do
-   reserved "+"
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsAdd args
- dqlSubtractP = do
-   reserved "-"
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsSubtract args
- dqlMultiplyP = do
-   reserved "*"
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsMultiply args
- dqlDivideP = do
-   reserved "/"
-   DibsTuple args <- tupleP [expr, expr]
-   return $ applyList2 DibsDivide args
 
 Parse a tuple, where the type of each element is given by the list argument.
 Since the tuple being parsed may have any size, we return the result as a list.

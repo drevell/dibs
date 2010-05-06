@@ -27,7 +27,7 @@ are spawned on program startup.
 
 > worker :: ConfigData -> IO ()
 > worker config =  forever $ do
->     let connQueue = getConnBTChan config
+>     let connQueue = connBTChan config
 >     putStrLn "Worker starting to wait for connection..."
 >     MkNewConnection sock hostname port <- takeBTCIO connQueue -- blocking
 >     putStrLn "Worker done blocking, has connection" 
@@ -88,5 +88,5 @@ This is the Read-Eval-Print Loop (REPL) run by worker threads.
 >           nextLine <- hGetLine handle
 >           repl config handle $! (stringSoFar ++ nextLine ++ "\n")
 >      where
->       schema = getConfSchema config
+>       schema = confSchema config
 

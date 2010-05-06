@@ -12,23 +12,31 @@ import Util
 import Schema
 import Logger
 import ValueTypes
+import TxnWriter
+
+txnLogQueueSize = 1000
+connectionQueueSize = 500
+portNumber = 2420
 
 main :: IO ()
 main = do 
     putStrLn "Running dibs dev v1"
-    let port = PortNumber 2420
-    connQueue <- newBTCIO 500  -- new BoundedTChan for incoming connections
-    logBTChan <- spawnLogger
-    let preliminaryConfig = ConfigData NoSchema connQueue logBTChan Dbg 
+    let port = PortNumber portNumber
+    connQueue <- newBTCIO connectionQueueSize
+    logChan <- spawnLogger
+    txnWriterChan <- newBTCIO txnLogQueueSize
+    let preliminaryConfig = ConfigData NoSchema connQueue logChan Dbg 
+            (PersistFile "./txn.log") txnWriterChan WriteThrough
     -- preliminaryConfig cannot yet have a valid schema stored in it 
     schema <- loadSchemaIO preliminaryConfig
-    let finalConfig = ConfigData schema connQueue logBTChan Dbg
+    let finalConfig = preliminaryConfig {confSchema = schema, 
+            connBTChan = connQueue, logBTChan = logChan, confLogLvl = Dbg}
+    startWriter finalConfig txnWriterChan
     spawnWorkers finalConfig 50
     withSocketsDo $ do 
         listenSocket <- listenOn port
         acceptLoop finalConfig listenSocket
         return ()
-
 
 acceptLoop :: ConfigData -> Socket -> IO ()
 acceptLoop config listenSocket =
@@ -37,7 +45,7 @@ acceptLoop config listenSocket =
         putBTCIO connQueue (MkNewConnection handle hostname port)
         return ()
    where
-    connQueue = getConnBTChan config
+    connQueue = connBTChan config
 
 spawnWorkers :: ConfigData -> Int -> IO ()
 spawnWorkers config numWorkers = do 

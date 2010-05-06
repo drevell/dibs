@@ -82,7 +82,7 @@ the transaction. Will call error() if the transaction aborts.
 > getConf = ask
 
 > getSchema :: Txn Schema
-> getSchema = liftM getConfSchema ask
+> getSchema = liftM confSchema ask
 
 Log a message by prepending it to the list of LogEntrys.
 

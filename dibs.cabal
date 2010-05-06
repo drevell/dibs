@@ -10,5 +10,5 @@ Synopsis:      A very simple distributed in-memory database
 executable dibs
   hs-source-dirs:  src
   main-is:         Main.hs
-  other-modules:   Logger BoundedTChan Util Worker Parser AST Schema Logger Txn ValueTypes
-  build-depends:   base, haskell98, containers, stm, network, parsec, mtl
+  other-modules:   Logger BoundedTChan Util Worker Parser AST Schema Logger Txn ValueTypes TxnWriter
+  build-depends:   base, haskell98, containers, stm, network, parsec, mtl, binary, bytestring, parallel
